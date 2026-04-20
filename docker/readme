@@ -1,0 +1,17 @@
+# Build
+docker compose build
+
+# Run
+docker compose up -d
+
+# Connect
+ssh tnuser@localhost -p 2222
+# Password: tnpass
+
+# Inside container
+cd /app/source
+python3 terminal_notes_ui.py
+
+docker stop $(docker ps -aq)
+docker rm $(docker ps -aq)
+docker system prune -a --volumes --force

@@ -1,0 +1,4 @@
+{
+  "extraPaths": ["./assets"],
+  "typeCheckingMode": "off"
+}

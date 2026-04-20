@@ -1,0 +1,15 @@
+!*.py
+
+notebooks_root/
+
+!/config/config.txt
+
+/config/.git_manager_config.json
+/config/token.vault
+/config/session.vault
+/config/dev.vault
+/.recovery/
+/build
+/dist
+terminal-notes-linux.spec
+clipboard_history.json

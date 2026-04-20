@@ -1,0 +1,26 @@
+
+services:
+  terminal-notes:
+    build: .
+    container_name: terminal-notes
+    ports:
+      - "2222:22"
+    volumes:
+      - ./data:/data
+    environment:
+      - TZ=UTC
+      - EDITOR=micro
+      - PYTHONUNBUFFERED=1
+      - TN_CONFIG_DIR=/data/config
+      - TN_CONFIG_FILE=/data/config.json
+      - TN_NOTEBOOKS_ROOT=/data/notebooks_root
+      - NVIM_APPNAME=/data/nvim
+      - MICRO_CONFIG_HOME=/data/micro
+    dns:
+      - 8.8.8.8
+      - 8.8.4.4
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    restart: unless-stopped
+    stdin_open: true
+    tty: true
