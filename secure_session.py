@@ -28,18 +28,22 @@ class SecureSessionStorage:
     Active flag indicates current machine's entry.
     """
     
-    def __init__(self, app_dir: Optional[str] = None):
-        """Initialize secure session storage"""
+    def __init__(self, app_dir: Optional[str] = None, vault_path: Optional[str] = None):
         if app_dir is None:
             if getattr(sys, 'frozen', False):
                 app_dir = os.path.dirname(sys.executable)
             else:
                 app_dir = os.path.dirname(os.path.abspath(__file__))
         
+        self.app_dir = app_dir
         self.config_dir = os.path.join(app_dir, "config")
         os.makedirs(self.config_dir, exist_ok=True)
         
-        self.vault_path = os.path.join(self.config_dir, "session.vault")
+        # Use custom vault path if provided, otherwise default
+        if vault_path:
+            self.vault_path = vault_path
+        else:
+            self.vault_path = os.path.join(self.config_dir, "session.vault")
         
         self._system_fingerprint = None
         self._vault_cache = None
@@ -47,6 +51,40 @@ class SecureSessionStorage:
     # ========================================================================
     # Public API
     # ========================================================================
+    
+    def _add_entry(self, notebook_id: str, fingerprint: bytes, fingerprint_hash: str, system_name: str, timestamp: int):
+        """Add a new entry to the vault (used during vault migration)"""
+        vault = self._read_vault()
+        entries = vault.get(notebook_id, [])
+        
+        # Check if this system already has an entry
+        for entry in entries:
+            if entry.get("active") and entry.get("system_name") == system_name:
+                # Update timestamp
+                entry["timestamp"] = timestamp
+                self._write_vault(vault)
+                return
+        
+        # Add new entry
+        key = self._derive_key(timestamp, fingerprint)
+        nonce = os.urandom(12)
+        
+        # Store fingerprint_hash and system_name
+        data = f"{fingerprint_hash}:{system_name}".encode()
+        encrypted_data = self._encrypt(data, key, nonce)
+        
+        entries.append({
+            "timestamp": timestamp,
+            "nonce": nonce,
+            "encrypted_keys": encrypted_data,
+            "active": True,
+            "created": timestamp,
+            "system_name": system_name
+        })
+        
+        vault[notebook_id] = entries
+        self._write_vault(vault)
+    
     
     def store_keys(self, notebook_id: str, password_key: bytes, phrase_key: bytes) -> bool:
         try:
@@ -429,16 +467,6 @@ class SecureSessionStorage:
             ph_key = hashlib.sha256(ph_key).digest()
         
         return pw_key, ph_key
-    
-    def set_custom_vault_path(self, vault_path):
-        """Set a custom vault file path for this instance"""
-        self.custom_vault_path = vault_path
-        self.vault_path = vault_path
-        self._vault_cache = None  # Clear cache
-
-    def get_vault_path(self):
-        """Get the current vault path"""
-        return self.vault_path
     
     def _read_vault(self) -> Dict[str, List[Dict]]:
         """Read entire binary vault file"""

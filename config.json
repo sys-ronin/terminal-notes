@@ -1,5 +1,0 @@
-{
-  "edit": "micro",
-  "view": "nvim",
-  "info": "Available editors: micro, nvim, vim, helix, hx, emacs -nw, nano, kate, geany, gedit, pluma, mousepad, leafpad, mg, jed, joe"
-}

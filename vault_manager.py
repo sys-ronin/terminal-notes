@@ -1,128 +1,114 @@
 #!/usr/bin/env python3
 """
-Vault Manager - Manages custom vault locations for secure session storage
+Vault Manager - Manages custom vault locations for notebooks
 """
-
-import sys
-sys.dont_write_bytecode = True
 
 import os
 import json
-import uuid
+import shutil
 from datetime import datetime
+from typing import Optional, Dict, List
+import sys
+sys.dont_write_bytecode = True
 
 
 class VaultManager:
-    """Manages vault registry for custom secure session locations"""
-    
-    def __init__(self, app_dir):
+    def __init__(self, app_dir: str):
         self.app_dir = app_dir
-        self.config_dir = os.path.join(app_dir, "config")
-        self.vault_registry_path = os.path.join(self.config_dir, "vaults_registry.json")
-        self._vaults_cache = None
+        self.registry_path = os.path.join(app_dir, "notebooks_root", "vaults_registry.json")
+        self.vaults = {}
+        self._load()
     
-    def _load_registry(self):
-        """Load vault registry (encrypted with system fingerprint)"""
-        if self._vaults_cache is not None:
-            return self._vaults_cache
-        
-        if not os.path.exists(self.vault_registry_path):
-            self._vaults_cache = {"vaults": {}}
-            return self._vaults_cache
-        
+    def _load(self):
+        """Load vault registry from disk"""
+        if os.path.exists(self.registry_path):
+            try:
+                with open(self.registry_path, 'r') as f:
+                    self.vaults = json.load(f)
+            except:
+                self.vaults = {"vaults": {}}
+        else:
+            self.vaults = {"vaults": {}}
+    
+    def _save(self):
+        """Save vault registry to disk"""
         try:
-            with open(self.vault_registry_path, 'r') as f:
-                self._vaults_cache = json.load(f)
-            return self._vaults_cache
-        except:
-            self._vaults_cache = {"vaults": {}}
-            return self._vaults_cache
+            with open(self.registry_path, 'w') as f:
+                json.dump(self.vaults, f, indent=2)
+        except Exception as e:
+            print(f"Error saving vault registry: {e}")
     
-    def _save_registry(self):
-        """Save vault registry"""
-        try:
-            with open(self.vault_registry_path, 'w') as f:
-                json.dump(self._vaults_cache, f, indent=2)
-            return True
-        except:
-            return False
-    
-    def get_vault_path(self, vault_id):
+    def get_vault_path(self, vault_id: str) -> Optional[str]:
         """Get location path for a vault ID"""
-        registry = self._load_registry()
-        vault = registry.get("vaults", {}).get(vault_id)
+        vault = self.vaults.get("vaults", {}).get(vault_id)
         if vault:
             return vault.get("location")
         return None
     
-    def get_vaults_list(self):
-        """Get all vaults as list with IDs"""
-        registry = self._load_registry()
-        result = []
-        for vault_id, vault_data in registry.get("vaults", {}).items():
-            result.append({
-                "id": vault_id,
-                "type": vault_data.get("type", "file"),
-                "location": vault_data.get("location"),
-                "notebooks": vault_data.get("notebooks", [])
-            })
-        return result
-    
-    def create_vault(self, location, vault_type="file"):
-        """Create a new vault entry"""
-        registry = self._load_registry()
-        
-        # Generate new vault ID
-        vault_id = f"vault_{uuid.uuid4().hex[:8]}"
-        
-        registry["vaults"][vault_id] = {
-            "type": vault_type,
-            "location": location,
-            "created": datetime.now().isoformat(),
-            "notebooks": []
-        }
-        
-        if self._save_registry():
-            return vault_id
+    def get_vault_for_notebook(self, notebook_id: str) -> Optional[str]:
+        """Find which vault contains this notebook"""
+        for vault_id, vault in self.vaults.get("vaults", {}).items():
+            if notebook_id in vault.get("notebooks", []):
+                return vault_id
         return None
     
-    def assign_notebook_to_vault(self, vault_id, notebook_id):
-        """Assign a notebook to a vault"""
-        registry = self._load_registry()
-        
-        if vault_id not in registry.get("vaults", {}):
+    def add_notebook_to_vault(self, vault_id: str, notebook_id: str):
+        """Add notebook to vault's notebook list"""
+        if vault_id not in self.vaults.get("vaults", {}):
             return False
         
-        notebooks = registry["vaults"][vault_id].get("notebooks", [])
-        if notebook_id not in notebooks:
-            notebooks.append(notebook_id)
-            registry["vaults"][vault_id]["notebooks"] = notebooks
-            return self._save_registry()
+        if "notebooks" not in self.vaults["vaults"][vault_id]:
+            self.vaults["vaults"][vault_id]["notebooks"] = []
+        
+        if notebook_id not in self.vaults["vaults"][vault_id]["notebooks"]:
+            self.vaults["vaults"][vault_id]["notebooks"].append(notebook_id)
+            self._save()
         return True
     
-    def remove_notebook_from_vault(self, vault_id, notebook_id):
-        """Remove a notebook from a vault"""
-        registry = self._load_registry()
-        
-        if vault_id not in registry.get("vaults", {}):
-            return False
-        
-        notebooks = registry["vaults"][vault_id].get("notebooks", [])
-        if notebook_id in notebooks:
-            notebooks.remove(notebook_id)
-            registry["vaults"][vault_id]["notebooks"] = notebooks
-            return self._save_registry()
-        return True
+    def remove_notebook_from_vault(self, vault_id: str, notebook_id: str):
+        """Remove notebook from vault's notebook list"""
+        if vault_id in self.vaults.get("vaults", {}):
+            if "notebooks" in self.vaults["vaults"][vault_id]:
+                if notebook_id in self.vaults["vaults"][vault_id]["notebooks"]:
+                    self.vaults["vaults"][vault_id]["notebooks"].remove(notebook_id)
+                    self._save()
     
-    def delete_vault(self, vault_id):
+    def create_vault(self, location: str, vault_id: str = None) -> str:
+        """Create a new vault entry"""
+        import uuid
+        
+        # If this is the default vault path, use "default" as ID
+        if location.endswith("config/session.vault") or vault_id == "default":
+            vault_id = "default"
+        else:
+            vault_id = f"vault_{uuid.uuid4().hex[:8]}"
+        
+        if "vaults" not in self.vaults:
+            self.vaults["vaults"] = {}
+        
+        self.vaults["vaults"][vault_id] = {
+            "type": "file",
+            "location": location,
+            "notebooks": [],
+            "created": datetime.now().isoformat()
+        }
+        
+        self._save()
+        return vault_id
+    
+    def delete_vault(self, vault_id: str):
         """Delete a vault entry (does not delete the actual vault file)"""
-        registry = self._load_registry()
-        
-        if vault_id in registry.get("vaults", {}):
-            del registry["vaults"][vault_id]
-            return self._save_registry()
-        return False
+        if vault_id in self.vaults.get("vaults", {}):
+            del self.vaults["vaults"][vault_id]
+            self._save()
     
-    def get_default_vault_path(self):
-        """Get the default vault path"""
-        return os.path.join(self.config_dir, "session.vault")
+    def list_vaults(self) -> Dict:
+        """Return all vaults"""
+        return self.vaults.get("vaults", {})
+    
+    def vault_exists(self, location: str) -> Optional[str]:
+        """Check if a vault already exists at given location, return vault_id if found"""
+        for vault_id, vault in self.vaults.get("vaults", {}).items():
+            if vault.get("location") == location:
+                return vault_id
+        return None

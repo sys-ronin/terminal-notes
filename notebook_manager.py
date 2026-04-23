@@ -18,6 +18,7 @@ import uuid
 import re
 from datetime import datetime
 from pathlib import Path
+from vault_manager import VaultManager
 from change_notebook import ChangeNotebookHandler
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from terminal_notes_core import NoteManager, SimpleNav
@@ -85,7 +86,13 @@ class NotebookManager:
         self.load_accounts()
         self.load_notebooks()
         self.ensure_accounts_structure()
-        self.change_handler = ChangeNotebookHandler(self, manager, ui, nav, app_dir)
+        
+        # ========== FIX: Pass self.app_dir, not app_dir parameter ==========
+        self.change_handler = ChangeNotebookHandler(self, manager, ui, nav, self.app_dir)
+        # ========== END FIX ==========
+        
+        self.vault_manager = VaultManager(self.app_dir)
+
 
 
     def load_accounts(self):
@@ -552,6 +559,15 @@ class NotebookManager:
             # Store clean name without ANY lock symbols
             clean_name = name.replace('🔐 ', '').replace('🔒 ', '').strip()
             
+            # After loading notebook, check for vault_id
+            vault_id = None
+            if isinstance(entry, dict):
+                vault_id = entry.get("vault_id")
+            elif isinstance(entry, str) and crypto:
+                decrypted = decrypt_registry_entry(entry, crypto)
+                if decrypted:
+                    vault_id = decrypted.get("vault_id")
+            
             # Store the raw clean name - lock symbol will be added during display
             self.notebooks.append({
                 "id": notebook_id,
@@ -564,7 +580,8 @@ class NotebookManager:
                 "file_count": file_count,
                 "sub_count": sub_count,
                 "git_config": git_config,
-                "account": account
+                "account": account,
+                "vault_id": vault_id  # ← NEW
             })
         
         # ========== SURGICAL FIX: Mark that autolock has been applied ==========
@@ -816,9 +833,13 @@ class NotebookManager:
                 count_display = ""
             
                 # Determine lock status from live object
+                # ========== FIX: Use get_notebook_status for lock detection ==========
                 if live_notebook:
                     is_encrypted = live_notebook.id in self.manager.encrypted_notebooks
-                    is_locked = is_encrypted and (not hasattr(live_notebook, 'custom_path') or not live_notebook.custom_path)
+                    # Use status to determine lock state
+                    status = self.manager.get_notebook_status(live_notebook.id)
+                    is_locked = status.get('locked', True) if is_encrypted else False
+                # ========== END FIX ==========
 
                     if is_encrypted and not is_locked:
                         encrypted_marker = "🔐 "
@@ -2366,14 +2387,10 @@ class NotebookManager:
         
         print(f"  [{option_offset}] Change trusted device status")
         
-        # ========== NEW: Option 5 - Change vault location (only when unlocked) ==========
-        # Check if notebook is unlocked (has custom_path)
-        is_unlocked = notebook.get('custom_path') is not None
+        # ========== NEW: Option 5 only when notebook is UNLOCKED ==========
+        is_unlocked = not notebook.get('locked', True) and notebook.get('path') is not None
         if is_unlocked:
-            print(f"  [{option_offset + 1}] Change vault location for this notebook")
-            has_vault_option = True
-        else:
-            has_vault_option = False
+            print(f"  [{option_offset + 1}] Change vault location")
         # ========== END NEW ==========
         
         print()
@@ -2393,7 +2410,7 @@ class NotebookManager:
             self.change_handler._change_remote(notebook)
         elif choice == str(option_offset):
             self.change_handler._show_trusted_devices(notebook)
-        elif has_vault_option and choice == str(option_offset + 1):
+        elif is_unlocked and choice == str(option_offset + 1):
             self.change_handler._change_vault_location(notebook)
 
     def get_git_manager_by_path(self, repo_path):

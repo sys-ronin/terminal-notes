@@ -15,33 +15,38 @@ from datetime import datetime
 # =============================================================================
 
 class CryptoManager:
-    """Centralized crypto management for all operations"""
+    """Centralized crypto management for all operations - VAULT BACKED"""
     
     def __init__(self, manager):
         self.manager = manager
-        self._key_cache = {}  # Cache crypto keys by notebook_id
+        self._key_cache = {}  # Keep for session performance
+        self._vault_mtime_cache = {}  # Track vault modification time
     
     def get_key(self, notebook_id: str, folder_name: str = None):
-        """
-        Get crypto key for a notebook.
-        Tries: cache → session → permanent storage → folder scanning
-        """
-        # Check cache first
+        """Get crypto key - cache valid only if vault still exists"""
+        
+        # Check cache but validate vault
         if notebook_id in self._key_cache:
-            return self._key_cache[notebook_id]
+            vault_path = self.manager._get_vault_path(notebook_id)
+            if vault_path and os.path.exists(vault_path):
+                # Vault still exists - cache is valid
+                return self._key_cache[notebook_id]
+            else:
+                # Vault missing - invalidate cache
+                del self._key_cache[notebook_id]
         
-        # Try session keys
-        if notebook_id in self.manager.session_keys:
-            key = self.manager.session_keys[notebook_id]
-            self._key_cache[notebook_id] = key
-            return key
+        # Cache miss or invalid - read from vault
+        crypto = self.manager._get_crypto_from_vault(notebook_id)
+        if crypto:
+            self._key_cache[notebook_id] = crypto
+            return crypto
         
-        # Try permanent storage with folder name
+        # Try permanent storage (secure session)
         if folder_name:
             from crypto import Crypto
             key = Crypto.retrieve_for_folder(folder_name)
             if key:
-                self.manager.session_keys[notebook_id] = key
+                self.manager._write_crypto_to_vault(notebook_id, key)
                 self._key_cache[notebook_id] = key
                 return key
         
@@ -170,6 +175,12 @@ def encrypt_registry_entry(entry_data: Dict, crypto) -> str:
 
 def decrypt_registry_entry(entry_hex: str, crypto) -> Optional[Dict]:
     """Decrypt a registry entry using the provided crypto key."""
+    # ========== FIX: Guard against None crypto ==========
+    if crypto is None:
+        print("  Failed to decrypt registry entry: crypto is None")
+        return None
+    # ========== END FIX ==========
+    
     try:
         encrypted = bytes.fromhex(entry_hex)
         json_str = crypto.decrypt(encrypted)
@@ -212,10 +223,24 @@ class NotebookOperations:
     # -------------------------------------------------------------------------
     
     def get_crypto(self, notebook_id: str):
-        """Get crypto key with caching"""
-        if notebook_id in self._crypto_cache:
-            return self._crypto_cache[notebook_id]
+        """Get crypto key - cache valid only if vault still exists"""
         
+        # Check cache with vault validation
+        if notebook_id in self._crypto_cache:
+            vault_path = self.manager._get_vault_path(notebook_id)
+            if vault_path and os.path.exists(vault_path):
+                return self._crypto_cache[notebook_id]
+            else:
+                # Vault missing - invalidate cache
+                del self._crypto_cache[notebook_id]
+        
+        # Cache miss or invalid - read from vault
+        crypto = self.manager._get_crypto_from_vault(notebook_id)
+        if crypto:
+            self._crypto_cache[notebook_id] = crypto
+            return crypto
+        
+        # Fallback to old method (will trigger unlock)
         crypto = self.manager.get_crypto(notebook_id)
         if crypto:
             self._crypto_cache[notebook_id] = crypto
@@ -390,6 +415,10 @@ class NotebookOperations:
             files_file = os.path.join(folder_path, "files.json")
         
             crypto = notebook._crypto if hasattr(notebook, '_crypto') else None
+        
+            # ========== FIX: Ensure vault_id is preserved in structure.json ==========
+            # notebook.to_dict() already includes vault_id if present (added earlier)
+            # ========== END FIX ==========
         
             # Write structure
             write_json(struct_file, notebook.to_dict(), crypto)

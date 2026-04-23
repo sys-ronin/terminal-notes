@@ -20,6 +20,9 @@ import uuid
 import getpass
 import re
 import hashlib
+from session_key_vault import SessionKeyVault
+from vault_manager import VaultManager
+
 
 def _safe_folder_name(name, notebook_id):
     """Convert name to safe folder name: lowercase, spaces to hyphens, keep underscores."""
@@ -138,6 +141,8 @@ class Notebook:
         }
         if hasattr(self, 'custom_path') and self.custom_path:
             data["custom_path"] = self.custom_path
+        if hasattr(self, 'vault_id') and self.vault_id:
+            data["vault_id"] = self.vault_id  # ← NEW
         return data
 
     @classmethod
@@ -152,8 +157,10 @@ class Notebook:
         ]
         if "custom_path" in data:
             notebook.custom_path = data["custom_path"]
-        # 🟢 ADD THIS LINE - preserve crypto when recreating from dict
-        notebook._crypto = data.get("_crypto")
+        if "vault_id" in data:  # ← NEW
+            notebook.vault_id = data["vault_id"]
+        if "_crypto" in data:
+            notebook._crypto = data.get("_crypto")
         return notebook
     
     def get_file_note_count(self):
@@ -190,9 +197,12 @@ class NoteManager:
         self.notebooks = []
         self.git_managers = {}
         self.encrypted_notebooks = set()
-        self.session_keys = {}
+        self.session_keys = SessionKeyVault(self)  # ← Replace {} with this
+        
+        # Initialize vault helper (will set manager reference)
         self._search_loaded = False
         self._crypto = None
+        self._registry_cache = None
 
         # Initialize secure session storage
         self.secure_storage = None
@@ -210,20 +220,6 @@ class NoteManager:
 
         self.load_all_notebooks()
         self._just_created = False
-    
-    def _get_vault_path_for_notebook(self, notebook):
-        """Get the vault path for a notebook (default or custom)"""
-        from vault_manager import VaultManager
-        
-        if hasattr(notebook, 'vault_id') and notebook.vault_id:
-            # Custom vault
-            vault_manager = VaultManager(self.app_dir)
-            vault_path = vault_manager.get_vault_path(notebook.vault_id)
-            if vault_path:
-                return vault_path
-        
-        # Default vault
-        return os.path.join(self.app_dir, "config", "session.vault")
 
     def _load_all_stored_keys(self):
         """Load ALL stored keys from permanent storage at startup"""
@@ -275,10 +271,15 @@ class NoteManager:
             print(f"  Unloading: {notebook.name}")
             notebook.notes = []
             notebook.subnotebooks = []
+            notebook.locked = True
+            notebook.custom_path = None
             notebook._notes_loaded = False
             # Remove from session keys
             if notebook_id in self.session_keys:
                 del self.session_keys[notebook_id]
+            # Clear SessionKeyVault cache
+            if hasattr(self.session_keys, 'clear_cache'):
+                self.session_keys.clear_cache(notebook_id)
             
 ##############################################################################
     
@@ -355,6 +356,104 @@ class NoteManager:
         if notebook_id not in self.encrypted_notebooks:
             return None
 
+        # ========== FIX: Check if vault exists with proper vault type detection ==========
+        vault_path = self._get_vault_path(notebook_id)
+        
+        # Get vault_id to determine if custom or default
+        vault_id = None
+        if hasattr(notebook, 'vault_id') and notebook.vault_id:
+            vault_id = notebook.vault_id
+        else:
+            # Check registry for vault_id
+            registry_data = self.load_registry()
+            entry = registry_data.get("notebooks", {}).get(notebook_id)
+            if isinstance(entry, dict):
+                vault_id = entry.get("vault_id")
+        
+        is_custom_vault = vault_id is not None and vault_id != "default"
+        
+        if not vault_path or not os.path.exists(vault_path):
+            # Clear all cached crypto
+            self._invalidate_all_crypto(notebook_id)
+            
+            retry_count = 0
+            max_retries = 3
+            
+            while retry_count < max_retries:
+                if is_custom_vault:
+                    print(f"\n  ❌ Custom vault is configured but missing")
+                    print(f"     Notebook has vault_id: {vault_id}")
+                    print(f"     Expected location: {vault_path}")
+                else:
+                    print(f"\n  ❌ Vault file not found: {vault_path}")
+                    print(f"     This notebook uses the default vault.")
+                
+                print("     This notebook requires the vault file to unlock.")
+                print("     Please insert the USB drive or locate the vault file.")
+                print()
+                print("  Options:")
+                print("    1) Retry (I've inserted the USB drive)")
+                print("    2) Locate vault file manually")
+                print("    3) Use recovery phrase (will create new vault)")
+                print("    4) Cancel")
+                print()
+                
+                try:
+                    choice = input("  Choose [1-4]: ").strip()
+                except:
+                    choice = "4"
+                
+                if choice == "1":
+                    # Retry - check if vault appears now
+                    retry_count += 1
+                    vault_path = self._get_vault_path(notebook_id)
+                    if vault_path and os.path.exists(vault_path):
+                        print("\n  ✓ Vault found! Continuing with unlock...")
+                        break
+                    else:
+                        remaining = max_retries - retry_count
+                        if remaining > 0:
+                            print(f"\n  ⚠️ Vault still not found. {remaining} attempt(s) remaining.")
+                        continue
+                
+                elif choice == "2":
+                    # Locate vault file manually
+                    new_location = input("  Enter vault file path: ").strip()
+                    if new_location and os.path.exists(new_location):
+                        from vault_manager import VaultManager
+                        vm = VaultManager(self.app_dir)
+                        existing_vault_id = vm.vault_exists(new_location)
+                        if existing_vault_id:
+                            self._update_notebook_vault_id(notebook_id, existing_vault_id)
+                        else:
+                            new_vault_id = vm.create_vault(new_location)
+                            self._update_notebook_vault_id(notebook_id, new_vault_id)
+                        print("  ✓ Vault location updated. Please try again.")
+                        input("\nPress Enter to continue...")
+                        return None
+                    else:
+                        print("  ✗ Invalid vault path.")
+                        continue
+                
+                elif choice == "3":
+                    # Use recovery phrase - continue to normal unlock flow
+                    break
+                
+                else:
+                    return None
+            
+            # If retries exhausted and still no vault, cancel
+            if retry_count >= max_retries and (not vault_path or not os.path.exists(vault_path)):
+                print("\n  Too many retries. Please try again later.")
+                input("\nPress Enter to continue...")
+                return None
+            
+            # If we get here and vault still missing but user chose option 3, continue to unlock
+            if not vault_path or not os.path.exists(vault_path):
+                # User chose recovery phrase option - proceed
+                pass
+        # ========== END FIX ==========
+
         # If notebook is locked or has no custom_path
         if notebook.locked or not hasattr(notebook, 'custom_path') or not notebook.custom_path:
             
@@ -375,8 +474,7 @@ class NoteManager:
                 if isinstance(entry, dict):
                     folder_path = entry.get("path")
                 elif isinstance(entry, str):
-                    # Try to get keys from secure session to decrypt the path
-                    storage = SecureSessionStorage(self.app_dir)
+                    storage = SecureSessionStorage(self.app_dir, vault_path=vault_path)
                     stored_pw_key, stored_ph_key = storage.get_keys(notebook_id)
                     
                     if stored_pw_key and stored_ph_key:
@@ -395,11 +493,9 @@ class NoteManager:
                 print(f"❌ Cannot find notebook folder for {notebook.name}")
                 return None
             
-            # Now prompt for password or phrase
-            storage = SecureSessionStorage(self.app_dir)
+            storage = SecureSessionStorage(self.app_dir, vault_path=vault_path)
             stored_pw_key, stored_ph_key = storage.get_keys(notebook_id)
             
-            # If we have keys in secure session, verify password
             if stored_pw_key and stored_ph_key:
                 attempts = 0
                 max_attempts = 3
@@ -422,7 +518,6 @@ class NoteManager:
                     print("Too many failed attempts.")
                     return None
                 
-                # Create crypto and verify with .tn_test
                 crypto = Crypto(stored_pw_key, stored_ph_key, folder_name)
                 test_file = os.path.join(folder_path, ".tn_test")
                 if not crypto.verify_test_marker(test_file):
@@ -430,13 +525,12 @@ class NoteManager:
                 
                 self.session_keys[notebook_id] = crypto
                 notebook.custom_path = folder_path
+                notebook.vault_id = "default"
                 notebook._crypto = crypto
                 notebook.locked = False
                 
-                # Refresh notebook content
                 self._refresh_encrypted_notebook(notebook, crypto)
                 
-                # Update registry lock status
                 if notebook_id in registry_data["notebooks"]:
                     entry = registry_data["notebooks"][notebook_id]
                     if isinstance(entry, dict):
@@ -454,8 +548,6 @@ class NoteManager:
                 
                 return crypto
             
-            # No keys in secure session - first time on this machine
-            # Use get_keys_with_verification which will prompt for phrase
             password_key, phrase_key = storage.get_keys_with_verification(
                 notebook_id, folder_path, folder_name
             )
@@ -465,7 +557,6 @@ class NoteManager:
             
             crypto = Crypto(password_key, phrase_key, folder_name)
             
-            # Verify with .tn_test
             test_file = os.path.join(folder_path, ".tn_test")
             if not crypto.verify_test_marker(test_file):
                 return None
@@ -475,10 +566,8 @@ class NoteManager:
             notebook._crypto = crypto
             notebook.locked = False
             
-            # Refresh notebook content
             self._refresh_encrypted_notebook(notebook, crypto)
             
-            # Update registry lock status
             if notebook_id in registry_data["notebooks"]:
                 entry = registry_data["notebooks"][notebook_id]
                 if isinstance(entry, dict):
@@ -489,6 +578,7 @@ class NoteManager:
                     decrypted = decrypt_registry_entry(entry, crypto)
                     if decrypted:
                         decrypted["locked"] = False
+                        decrypted["vault_id"] = "default"  # ← ADD THIS
                         new_entry = encrypt_registry_entry(decrypted, crypto)
                         if new_entry:
                             registry_data["notebooks"][notebook_id] = new_entry
@@ -496,12 +586,210 @@ class NoteManager:
             
             return crypto
         
-        # Already unlocked
         else:
+            # Already unlocked - but verify vault still exists
             if notebook_id in self.session_keys:
-                return self.session_keys[notebook_id]
+                # Double-check vault still exists
+                vault_check = self._get_vault_path(notebook_id)
+                if vault_check and os.path.exists(vault_check):
+                    return self.session_keys[notebook_id]
+                else:
+                    # Vault missing - force lock
+                    if hasattr(notebook, '_crypto'):
+                        delattr(notebook, '_crypto')
+                    notebook.locked = True
+                    if notebook_id in self.session_keys:
+                        del self.session_keys[notebook_id]
+                    return None
             return None
+    
+    def _invalidate_notebook_crypto(self, notebook_id):
+        """Clear all cached crypto for a notebook"""
+        notebook = self.find_notebook_by_id(notebook_id)
+        if notebook:
+            if hasattr(notebook, '_crypto'):
+                delattr(notebook, '_crypto')
+            notebook.locked = True
+        
+        if notebook_id in self.session_keys:
+            del self.session_keys[notebook_id]
+        
+        if hasattr(self, 'ops') and hasattr(self.ops, '_crypto_cache'):
+            self.ops._crypto_cache.pop(notebook_id, None)
+        
+        if hasattr(self, 'ops') and hasattr(self.ops.crypto, '_key_cache'):
+            self.ops.crypto._key_cache.pop(notebook_id, None)
+    
+    def _update_notebook_vault_id(self, notebook_id, vault_id):
+        """Update notebook registry with new vault_id"""
+        registry_data = self.load_registry()
+        entry = registry_data.get("notebooks", {}).get(notebook_id)
+        
+        if isinstance(entry, dict):
+            entry["vault_id"] = vault_id
+            self.save_registry(registry_data)
+        elif isinstance(entry, str):
+            crypto = self.session_keys.get(notebook_id)
+            if crypto:
+                from notebook_operations import decrypt_registry_entry, encrypt_registry_entry
+                decrypted = decrypt_registry_entry(entry, crypto)
+                if decrypted:
+                    decrypted["vault_id"] = vault_id
+                    new_entry = encrypt_registry_entry(decrypted, crypto)
+                    if new_entry:
+                        registry_data["notebooks"][notebook_id] = new_entry
+                        self.save_registry(registry_data)
+    
+    #############################################################
+        
+    def _get_vault_path(self, notebook_id):
+        """Get vault file path - NO FALLBACK to default"""
+        from vault_manager import VaultManager
+        
+        registry_data = self.load_registry()
+        entry = registry_data.get("notebooks", {}).get(notebook_id)
+        
+        vault_id = None
+        if isinstance(entry, dict):
+            vault_id = entry.get("vault_id")
+        
+        # Get vault_id from notebook object if available
+        notebook = self.find_notebook_by_id(notebook_id)
+        if notebook and hasattr(notebook, 'vault_id') and notebook.vault_id:
+            vault_id = notebook.vault_id
+        
+        if vault_id == "default":
+            return os.path.join(self.app_dir, "config", "session.vault")
+        
+        if vault_id:
+            vm = VaultManager(self.app_dir)
+            vault_path = vm.get_vault_path(vault_id)
+            if vault_path and os.path.exists(vault_path):
+                return vault_path
+            # ========== FIX: Return None if custom vault missing ==========
+            return None
+        # ========== END FIX ==========
+        
+        # Only return default if NO vault_id is set
+        return os.path.join(self.app_dir, "config", "session.vault")
 
+    def get_notebook_status(self, notebook_id):
+        """Get notebook status including vault availability"""
+        notebook = self.find_notebook_by_id(notebook_id)
+        if not notebook:
+            return {"exists": False}
+        
+        # Get fresh lock status from registry
+        registry_data = self.load_registry()
+        entry = registry_data.get("notebooks", {}).get(notebook_id)
+        
+        registry_locked = True
+        if isinstance(entry, dict):
+            registry_locked = entry.get("locked", True)
+        elif isinstance(entry, str):
+            crypto = self.session_keys.get(notebook_id)
+            if crypto:
+                from notebook_operations import decrypt_registry_entry
+                decrypted = decrypt_registry_entry(entry, crypto)
+                if decrypted:
+                    registry_locked = decrypted.get("locked", True)
+        
+        vault_path = self._get_vault_path(notebook_id)
+        vault_available = vault_path and os.path.exists(vault_path) if vault_path else False
+        
+        is_locked = registry_locked
+        
+        return {
+            "exists": True,
+            "locked": is_locked,
+            "registry_locked": registry_locked,
+            "vault_available": vault_available,
+            "vault_path": vault_path,
+            "name": notebook.name,
+            "is_encrypted": notebook_id in self.encrypted_notebooks
+        }
+    def _get_crypto_from_vault(self, notebook_id):
+        """Read crypto from vault - NO FALLBACK, NO CACHE"""
+        
+        notebook = self.find_notebook_by_id(notebook_id)
+        if not notebook:
+            return None
+        
+        vault_path = self._get_vault_path(notebook_id)
+        
+        # If custom vault is configured but missing, return None immediately
+        if not vault_path or not os.path.exists(vault_path):
+            # Clear any stale crypto
+            self._invalidate_all_crypto(notebook_id)
+            return None
+        
+        clean_name = notebook.name.replace('🔐 ', '').replace('🔒 ', '')
+        folder_name = f"{clean_name}-{notebook_id}"
+        
+        storage = SecureSessionStorage(self.app_dir, vault_path=vault_path)
+        password_key, phrase_key = storage.get_keys(notebook_id)
+        
+        if password_key and phrase_key:
+            from crypto import Crypto
+            return Crypto(password_key, phrase_key, folder_name)
+        
+        return None
+
+    def _write_crypto_to_vault(self, notebook_id, crypto):
+        """Write crypto to vault file"""
+        from secure_session import SecureSessionStorage
+        
+        vault_path = self._get_vault_path(notebook_id)
+        if not vault_path:
+            return
+        
+        storage = SecureSessionStorage(self.app_dir, vault_path=vault_path)
+        storage.store_keys(notebook_id, crypto.password_key, crypto.phrase_key)
+
+    def _vault_has_keys(self, notebook_id):
+        """Check if vault has keys for this notebook"""
+        from secure_session import SecureSessionStorage
+        
+        vault_path = self._get_vault_path(notebook_id)
+        if not vault_path or not os.path.exists(vault_path):
+            return False
+        
+        storage = SecureSessionStorage(self.app_dir, vault_path=vault_path)
+        pw, ph = storage.get_keys(notebook_id)
+        return pw is not None and ph is not None
+
+    def _delete_from_vault(self, notebook_id):
+        """Remove keys from vault"""
+        from secure_session import SecureSessionStorage
+        
+        vault_path = self._get_vault_path(notebook_id)
+        if not vault_path or not os.path.exists(vault_path):
+            return
+        
+        storage = SecureSessionStorage(self.app_dir, vault_path=vault_path)
+        storage.remove_entry(notebook_id, None)
+    
+    def _invalidate_all_crypto(self, notebook_id):
+        """Clear all cached crypto for a notebook"""
+        notebook = self.find_notebook_by_id(notebook_id)
+        if notebook:
+            if hasattr(notebook, '_crypto'):
+                delattr(notebook, '_crypto')
+            notebook.locked = True
+        
+        if notebook_id in self.session_keys:
+            del self.session_keys[notebook_id]
+        
+        # Clear SessionKeyVault cache
+        if hasattr(self.session_keys, 'clear_cache'):
+            self.session_keys.clear_cache(notebook_id)
+        
+        # Clear ops caches
+        if hasattr(self, 'ops') and hasattr(self.ops, '_crypto_cache'):
+            self.ops._crypto_cache.pop(notebook_id, None)
+        
+        if hasattr(self, 'ops') and hasattr(self.ops.crypto, '_key_cache'):
+            self.ops.crypto._key_cache.pop(notebook_id, None)
 
     def _refresh_encrypted_notebook(self, notebook, crypto):
         """Replace the locked placeholder with the real decrypted notebook data"""
@@ -631,15 +919,12 @@ class NoteManager:
         self.notebooks = []
         registry_data = self.load_registry()
 
-        # ========== SURGICAL FIX: Track if this is first load ==========
         first_load = not hasattr(self, '_initial_load_complete')
-        # ========== END FIX ==========
 
         from notebook_operations import NotebookOperations
         ops = NotebookOperations(self)
 
         def get_name_from_folder(nid):
-            """Extract notebook name from folder name (format: name-{id})"""
             if os.path.exists(self.notebooks_root):
                 for folder in os.listdir(self.notebooks_root):
                     if folder.endswith(nid):
@@ -659,6 +944,7 @@ class NoteManager:
                 is_locked = True
                 folder_path = None
                 autolock = False
+                vault_id = None
                 
                 if not crypto:
                     from crypto import Crypto
@@ -682,6 +968,7 @@ class NoteManager:
                                 real_name = decrypted.get("name")
                                 is_locked = decrypted.get("locked", True)
                                 autolock = decrypted.get("autolock", False)
+                                vault_id = decrypted.get("vault_id")
                                 folder_path = decrypted.get("path")
                                 
                                 if folder_path:
@@ -699,64 +986,116 @@ class NoteManager:
                         real_name = decrypted.get("name")
                         is_locked = decrypted.get("locked", True)
                         autolock = decrypted.get("autolock", False)
+                        vault_id = decrypted.get("vault_id")
                         folder_path = decrypted.get("path")
                         
                         if folder_path and not os.path.isabs(folder_path):
                             folder_path = os.path.join(self.notebooks_root, folder_path)
                 
-                # REMOVED autolock force-lock from here
+                # Create notebook object with vault_id
+                name_from_folder = get_name_from_folder(notebook_id)
+                final_name = name_from_folder if name_from_folder else (real_name or f"Encrypted-{notebook_id[:8]}")
                 
-                if crypto and real_name:
-                    if not is_locked and folder_path and os.path.exists(folder_path):
-                        notebook = ops.load_notebook_from_path_with_crypto(folder_path, crypto)
-                        if notebook:
+                notebook = Notebook(final_name, notebook_id=notebook_id)
+                notebook.vault_id = vault_id if vault_id else "default"
+                notebook.locked = is_locked
+                notebook.custom_path = None
+                notebook._crypto = None
+                
+                self.encrypted_notebooks.add(notebook_id)
+                
+                # Check if vault exists
+                if notebook.vault_id:
+                    from vault_manager import VaultManager
+                    vm = VaultManager(self.app_dir)
+                    if notebook.vault_id == "default":
+                        vault_path = os.path.join(self.app_dir, "config", "session.vault")
+                    else:
+                        vault_path = vm.get_vault_path(notebook.vault_id)
+                    
+                    if not vault_path or not os.path.exists(vault_path):
+                        notebook.locked = True
+                        if notebook_id in self.session_keys:
+                            del self.session_keys[notebook_id]
+                        if hasattr(self.session_keys, 'clear_cache'):
+                            self.session_keys.clear_cache(notebook_id)
+                
+                # Try to load full notebook if unlocked
+                if real_name and not notebook.locked and folder_path and os.path.exists(folder_path):
+                    if not crypto:
+                        from secure_session import SecureSessionStorage
+                        from crypto import Crypto
+                        from vault_manager import VaultManager
+                        
+                        if notebook.vault_id == "default":
+                            vault_path = os.path.join(self.app_dir, "config", "session.vault")
+                        else:
+                            vm = VaultManager(self.app_dir)
+                            vault_path = vm.get_vault_path(notebook.vault_id)
+                        
+                        if vault_path and os.path.exists(vault_path):
+                            storage = SecureSessionStorage(self.app_dir, vault_path=vault_path)
+                            pw_key, ph_key = storage.get_keys(notebook_id)
+                            if pw_key and ph_key:
+                                folder_name = os.path.basename(folder_path)
+                                crypto = Crypto(pw_key, ph_key, folder_name)
+                                self.session_keys[notebook_id] = crypto
+                    
+                    if crypto:
+                        loaded_notebook = ops.load_notebook_from_path_with_crypto(folder_path, crypto)
+                        if loaded_notebook:
+                            notebook = loaded_notebook
                             notebook.name = real_name
                             notebook.custom_path = folder_path
+                            notebook.vault_id = vault_id if vault_id else "default"
                             notebook._crypto = crypto
                             notebook.locked = False
-                            self.encrypted_notebooks.add(notebook_id)
                         else:
-                            name_from_folder = get_name_from_folder(notebook_id)
-                            final_name = name_from_folder if name_from_folder else real_name
-                            notebook = Notebook(final_name, notebook_id=notebook_id)
-                            notebook.locked = True
-                            notebook.custom_path = None
-                            notebook._crypto = None
-                            self.encrypted_notebooks.add(notebook_id)
+                            notebook.custom_path = folder_path
                     else:
-                        name_from_folder = get_name_from_folder(notebook_id)
-                        final_name = name_from_folder if name_from_folder else real_name
-                        notebook = Notebook(final_name, notebook_id=notebook_id)
-                        notebook.locked = True
-                        notebook.custom_path = None
-                        notebook._crypto = None
-                        self.encrypted_notebooks.add(notebook_id)
-                else:
-                    name_from_folder = get_name_from_folder(notebook_id)
-                    if name_from_folder:
-                        final_name = name_from_folder
-                    else:
-                        final_name = f"Encrypted-{notebook_id[:8]}"
+                        notebook.custom_path = folder_path
+                
+                if notebook:
+                    self.notebooks.append(notebook)
                     
-                    notebook = Notebook(final_name, notebook_id=notebook_id)
-                    notebook.locked = True
-                    notebook.custom_path = None
-                    notebook._crypto = None
-                    self.encrypted_notebooks.add(notebook_id)
-            
             elif isinstance(entry, dict):
                 name = entry.get("name")
                 if not name:
                     if not quiet:
                         print(f"  ⚠ Registry entry for {notebook_id[:8]} has no name, skipping")
                     continue
-            
+
                 folder_path = entry.get("path")
                 autolock = entry.get("autolock", False)
+                vault_id = entry.get("vault_id", "default")
+                is_locked = entry.get("locked", False)
+                is_encrypted = entry.get("encrypted", False)
                 
                 if folder_path and not os.path.isabs(folder_path):
                     folder_path = os.path.join(self.notebooks_root, folder_path)
-            
+
+                # Create notebook
+                notebook = Notebook(name, notebook_id=notebook_id)
+                notebook.vault_id = vault_id
+                notebook.locked = is_locked
+                
+                if is_encrypted:
+                    self.encrypted_notebooks.add(notebook_id)
+                
+                # Check if vault exists
+                if vault_id == "default":
+                    vault_path = os.path.join(self.app_dir, "config", "session.vault")
+                else:
+                    from vault_manager import VaultManager
+                    vm = VaultManager(self.app_dir)
+                    vault_path = vm.get_vault_path(vault_id)
+                
+                if not vault_path or not os.path.exists(vault_path):
+                    notebook.locked = True
+                    if notebook_id in self.session_keys:
+                        del self.session_keys[notebook_id]
+
+                # Load structure if folder exists
                 if folder_path and os.path.exists(folder_path):
                     struct_file = os.path.join(folder_path, "structure.json")
                     if os.path.exists(struct_file):
@@ -773,9 +1112,7 @@ class NoteManager:
                             from terminal_notes_core import Notebook as TempNotebook
                             temp_nb = TempNotebook.from_dict(struct_data)
                         
-                            notebook = Notebook(name, notebook_id=notebook_id)
                             notebook.custom_path = folder_path
-                        
                             notebook.notes = []
                             for note in temp_nb.notes:
                                 is_file = note.id in files_data
@@ -785,33 +1122,24 @@ class NoteManager:
                                 new_note.created = note.created
                                 new_note.updated = note.updated
                                 notebook.notes.append(new_note)
-                        
                             notebook.subnotebooks = temp_nb.subnotebooks
-                            notebook.locked = False
                         
                         except Exception as e:
                             if not quiet:
                                 print(f"  Error loading {name}: {e}")
-                            notebook = Notebook(name, notebook_id=notebook_id)
-                            notebook.custom_path = folder_path
-                            notebook.locked = False
                     else:
-                        notebook = Notebook(name, notebook_id=notebook_id)
                         notebook.custom_path = folder_path
-                        notebook.locked = False
                 else:
-                    notebook = Notebook(name, notebook_id=notebook_id)
-                    notebook.locked = False
+                    notebook.custom_path = None
 
-            if notebook:
-                self.notebooks.append(notebook)
+                if notebook:
+                    self.notebooks.append(notebook)
 
-        # ========== SURGICAL FIX: Apply autolock ONCE after all notebooks are loaded ==========
+        # Apply autolock on first load
         if first_load:
             registry_updated = False
             for notebook in self.notebooks:
                 if notebook.id in self.encrypted_notebooks:
-                    # Check registry for autolock flag
                     entry = registry_data.get("notebooks", {}).get(notebook.id)
                     autolock = False
                     crypto = self.session_keys.get(notebook.id)
@@ -825,22 +1153,17 @@ class NoteManager:
                             autolock = decrypted.get("autolock", False)
                     
                     if autolock:
-                        # Lock the notebook
                         notebook.locked = True
                         notebook.custom_path = None
                         
-                        # Clear session key from manager
                         if notebook.id in self.session_keys:
                             del self.session_keys[notebook.id]
                         
-                        # Clear crypto from notebook object
                         if hasattr(notebook, '_crypto'):
                             delattr(notebook, '_crypto')
                         
-                        # ========== CRITICAL: Update registry to locked = True ==========
                         if notebook.id in registry_data["notebooks"]:
                             entry = registry_data["notebooks"][notebook.id]
-                            
                             if isinstance(entry, dict):
                                 entry["locked"] = True
                                 registry_updated = True
@@ -853,16 +1176,24 @@ class NoteManager:
                                     if new_entry:
                                         registry_data["notebooks"][notebook.id] = new_entry
                                         registry_updated = True
-                        # ========== END CRITICAL ==========
             
-            # Save registry if any updates were made
             if registry_updated:
                 self.save_registry(registry_data)
             
             self._initial_load_complete = True
-        # ========== END FIX ==========
 
         return self.notebooks
+    
+    def _get_vault_path_by_id(self, notebook_id, vault_id):
+        """Get vault path from vault_id (no session_keys access)"""
+        from vault_manager import VaultManager
+        
+        if vault_id:
+            vm = VaultManager(self.app_dir)
+            return vm.get_vault_path(vault_id)
+        
+        # Default vault
+        return os.path.join(self.app_dir, "config", "session.vault")    
     
     def save_data(self):
         for notebook in self.notebooks:
@@ -984,6 +1315,7 @@ class NoteManager:
         from getpass import getpass
         import subprocess
         import shutil
+        import json
 
         datetime_stamp = datetime.now().strftime("%Y%g%d%H%M%S")
         notebook = Notebook(name, notebook_id=datetime_stamp)
@@ -998,6 +1330,7 @@ class NoteManager:
             folder_path = os.path.join(self.notebooks_root, folder_name)
 
         notebook.custom_path = folder_path
+        notebook.vault_id = "default"
 
         # Handle encryption
         crypto = None
@@ -1327,7 +1660,6 @@ class NoteManager:
                             input("\n  Press Enter to continue...")
                             continue
                         
-                        # Calculate strength
                         score = 0
                         feedback = []
                         
@@ -1404,7 +1736,6 @@ class NoteManager:
                             if confirm == 'n':
                                 continue
                         
-                        # Display final phrase
                         os.system('clear' if os.name == 'posix' else 'cls')
                         print("\n" + "─" * 60)
                         print("  YOUR RECOVERY PHRASE")
@@ -1533,6 +1864,20 @@ class NoteManager:
         except Exception as e:
             print(f"  ⚠ Git init failed: {e}")
 
+        # Ensure default vault exists
+        from vault_manager import VaultManager
+        vm = VaultManager(self.app_dir)
+        default_path = os.path.join(self.app_dir, "config", "session.vault")
+        
+        if not vm.vault_exists(default_path):
+            vm.create_vault(default_path, "default")
+        
+        if not os.path.exists(default_path):
+            empty_vault = {"notebooks": {}}
+            os.makedirs(os.path.dirname(default_path), exist_ok=True)
+            with open(default_path, 'w') as f:
+                json.dump(empty_vault, f)
+
         # Register in registry
         self.register_notebook(notebook, folder_path)
 
@@ -1542,12 +1887,14 @@ class NoteManager:
                 entry = registry_data["notebooks"][notebook.id]
                 if isinstance(entry, dict):
                     entry["locked"] = False
+                    entry["vault_id"] = "default"
                     self.save_registry(registry_data)
                 elif isinstance(entry, str):
                     from notebook_operations import decrypt_registry_entry, encrypt_registry_entry
                     decrypted = decrypt_registry_entry(entry, crypto)
                     if decrypted:
                         decrypted["locked"] = False
+                        decrypted["vault_id"] = "default"
                         new_entry = encrypt_registry_entry(decrypted, crypto)
                         if new_entry:
                             registry_data["notebooks"][notebook.id] = new_entry
@@ -1555,7 +1902,8 @@ class NoteManager:
 
             notebook.locked = False
             notebook._crypto = crypto
-
+            vm.add_notebook_to_vault("default", notebook.id)
+        
         self.notebooks.append(notebook)
 
         print(f"\n  Notebook created successfully!")
@@ -1568,6 +1916,18 @@ class NoteManager:
 
         self._just_created = True
         return notebook
+    
+    def _ensure_default_vault(self):
+        """Ensure default vault exists in vault registry"""
+        from vault_manager import VaultManager
+        vm = VaultManager(self.app_dir)
+        default_path = os.path.join(self.app_dir, "config", "session.vault")
+        
+        # Check if default vault already exists with ID "default"
+        existing_vault_id = vm.vault_exists(default_path)
+        if not existing_vault_id:
+            # Create default vault entry with ID "default"
+            vm.create_vault(default_path, "default")
     
     def create_note(self, notebook, title, content, created_with="internal"):
         """Create a new note - delegated to ops (handles crypto & git)"""
@@ -1635,16 +1995,45 @@ class NoteManager:
             notebook = self.find_notebook_by_id(nb_id)
             is_encrypted = nb_id in self.encrypted_notebooks
         
-            if is_encrypted and nb_id in self.session_keys:
-                crypto = self.session_keys[nb_id]
-            
+            # ========== FIX: Try to get crypto safely ==========
+            crypto = None
+            if is_encrypted:
+                try:
+                    if nb_id in self.session_keys:
+                        crypto = self.session_keys[nb_id]
+                    else:
+                        # For newly created notebooks, crypto may not be in session_keys yet
+                        # Try to get from vault
+                        vault_path = self._get_vault_path(nb_id)
+                        if vault_path and os.path.exists(vault_path):
+                            from secure_session import SecureSessionStorage
+                            storage = SecureSessionStorage(self.app_dir, vault_path=vault_path)
+                            pw_key, ph_key = storage.get_keys(nb_id)
+                            if pw_key and ph_key:
+                                from crypto import Crypto
+                                # Need folder_name for crypto
+                                if notebook and hasattr(notebook, 'custom_path') and notebook.custom_path:
+                                    folder_name = os.path.basename(notebook.custom_path)
+                                else:
+                                    clean_name = entry.get("name", "").replace('🔐 ', '').replace('🔒 ', '')
+                                    folder_name = f"{clean_name}-{nb_id}"
+                                crypto = Crypto(pw_key, ph_key, folder_name)
+                except KeyError:
+                    crypto = None
+            # ========== END FIX ==========
+        
+            if is_encrypted and crypto:
                 clean_entry = {
                     "name": entry.get("name", ""),
                     "path": entry.get("path", ""),
                     "encrypted": True,
-                    "locked": entry.get("locked", False)
+                    "locked": entry.get("locked", False),
+                    "vault_id": entry.get("vault_id", "default")
                 }
-            
+                
+                if "autolock" in entry:
+                    clean_entry["autolock"] = entry["autolock"]
+                
                 encrypted = encrypt_registry_entry(clean_entry, crypto)
                 if encrypted:
                     encrypted_registry["notebooks"][nb_id] = encrypted
@@ -1655,15 +2044,21 @@ class NoteManager:
                 encrypted_registry["notebooks"][nb_id] = {
                     "name": entry.get("name", "Unknown"),
                     "encrypted": True,
-                    "locked": True
+                    "locked": True,
+                    "vault_id": entry.get("vault_id", "default")
                 }
             else:
-                encrypted_registry["notebooks"][nb_id] = {
+                unencrypted_entry = {
                     "name": entry.get("name", ""),
                     "path": entry.get("path", ""),
                     "encrypted": False,
                     "locked": False
                 }
+                if "autolock" in entry:
+                    unencrypted_entry["autolock"] = entry["autolock"]
+                if "vault_id" in entry:
+                    unencrypted_entry["vault_id"] = entry["vault_id"]
+                encrypted_registry["notebooks"][nb_id] = unencrypted_entry
 
         try:
             with open(temp_file, 'w') as f:
@@ -1681,20 +2076,27 @@ class NoteManager:
                     pass
             return False
 
-    def load_registry(self):
-        """Load the notebook registry"""
+    def load_registry(self, force_reload=False):
+        """Load the notebook registry with caching"""
+        if self._registry_cache is not None and not force_reload:
+            return self._registry_cache
+        
         registry_file = self.get_registry_file()
-    
+        
         if not os.path.exists(registry_file):
-            return {"notebooks": {}}
-    
+            self._registry_cache = {"notebooks": {}}
+            return self._registry_cache
+        
         try:
             with open(registry_file, 'r') as f:
-                registry_data = json.load(f)
-            return registry_data
+                self._registry_cache = json.load(f)
+                if self._registry_cache is None:
+                    self._registry_cache = {"notebooks": {}}
+                return self._registry_cache
         except Exception as e:
             print(f"Error loading registry: {e}")
-            return {"notebooks": {}}
+            self._registry_cache = {"notebooks": {}}
+            return self._registry_cache
     
     def register_notebook(self, notebook, folder_path, is_import=False):
         """Register a notebook - ONLY for root notebooks!"""
