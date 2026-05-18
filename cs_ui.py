@@ -222,51 +222,85 @@ class ResultFormatter:
         """
         Build a formatted line with title left-aligned and path right-aligned.
         Ensures the closing bracket stays at the edge.
-        Accounts for emoji/encrypted symbols (🔐 takes 2 chars width but 1 in len)
         """
-        # Reserved space: [i] (4 chars) + space before path (1) = 5
-        reserved = 3 if idx is not None else 0
-
-        # Total width minus reserved = available for content
+        import shutil
+        
+        # Get actual terminal width (recompute to be safe)
+        try:
+            current_width = shutil.get_terminal_size().columns
+            self.width = current_width
+        except:
+            pass
+        
+        # Handle emoji display width (each emoji takes 2 columns)
+        def get_display_width(s):
+            """Calculate display width accounting for emojis (which take 2 columns)"""
+            width = 0
+            for ch in s:
+                # Emoji range (rough check)
+                if ord(ch) >= 0x1F000 and ord(ch) <= 0x1F9FF:
+                    width += 2
+                else:
+                    width += 1
+            return width
+        
+        # 🟢 FIX: Calculate actual width of index (e.g., "[1] " = 4, "[10] " = 5, "[100] " = 6)
+        reserved = 0
+        index_str = ""
+        if idx is not None:
+            index_str = f"[{idx}] "
+            reserved = len(index_str)
+        
+        # Available width for content
         available = self.width - reserved
-
-        # Format the path first (without brackets for length calculation)
-        path_content = path[1:-1] if path.startswith('[') and path.endswith(']') else path
-
-        # Calculate how much space the path actually needs
-        path_needed = len(path_content) + 2  # +2 for brackets
-
-        # 🟢 FIX: Adjust for emoji in title (🔐 takes 2 chars width)
-        emoji_count = title.count('🔐') + title.count('🔒')
-        emoji_width_penalty = emoji_count  # Each emoji adds 1 extra char width
-    
-        # Title gets whatever space is left after path
-        title_max = available - path_needed - emoji_width_penalty
-
-        # If title would be too small, truncate path instead
-        if title_max < 10:
-            # Path needs to be truncated - reduce by difference
-            path_max = available - 10 - emoji_width_penalty
-            if path_max < 10:
-                path_max = 10
-            path_display = self._truncate(path_content, path_max - 2)
-            path_display = f"[{path_display}]"
-            title_max = available - len(path_display) - emoji_width_penalty
+        
+        # Extract path content (remove brackets)
+        if path.startswith('[') and path.endswith(']'):
+            path_content = path[1:-1]
         else:
-            path_display = path
-
-        # Truncate title to available space (accounting for emoji width)
-        title_display = self._truncate(title, title_max + emoji_width_penalty)
-
+            path_content = path
+        
+        # Calculate maximum title length (leave at least 25 chars for path)
+        min_path_space = min(30, max(25, available // 4))
+        max_title_len = available - min_path_space - 2
+        
+        # If title is too long, truncate it
+        if len(title) > max_title_len - 3:  # Leave room for "..."
+            title_display = title[:max_title_len - 6] + "..."
+        else:
+            title_display = title
+        
+        # Calculate actual title display width
+        title_width = get_display_width(title_display)
+        
+        # Calculate remaining space for path
+        remaining = available - title_width - 2  # -2 for space padding
+        
+        # Truncate path if needed
+        if len(path_content) + 2 > remaining:
+            # Leave room for "..."
+            max_path_len = max(10, remaining - 5)
+            if len(path_content) > max_path_len:
+                # Truncate from the right side (keep beginning)
+                truncated = path_content[:max_path_len - 3] + "..."
+                path_display = f"[{truncated}]"
+            else:
+                path_display = f"[{path_content}]"
+        else:
+            path_display = f"[{path_content}]"
+        
+        # Calculate final padding
+        final_title_width = get_display_width(title_display)
+        final_path_width = get_display_width(path_display)
+        padding = available - final_title_width - final_path_width - 1
+        if padding < 1:
+            padding = 1
+        
         # Build the line
         if idx is not None:
-            # Calculate current length including emoji width penalty
-            base = f"[{idx}] "
-            current_length = len(base) + len(title_display) + emoji_width_penalty
-            padding = available - current_length - len(path_display)
-            return f"{base}{title_display}{' ' * padding}{path_display}"
+            return f"{index_str}{title_display}{' ' * padding}{path_display}"
         else:
-            return f"{title_display} {path_display}"
+            return f"{title_display}{' ' * padding}{path_display}"
     
     def format(self, result, query_parsed):
         """Format a single result based on its type"""
@@ -346,19 +380,28 @@ class ResultFormatter:
         return self._build_line(display_title, path, idx)
 
     def _format_notebook(self, result, idx=None):
-        """Format a regular notebook result - NO action prefix"""
+        """Format a regular notebook result WITH lock symbol"""
         title = result.get('title') or result.get('name', 'Unknown')
         notebook_id = result.get('notebook_id') or result.get('uuid')
-    
-        # Add lock icon if encrypted
+        
+        # Check lock status from master registry
+        is_locked = True
         is_encrypted = False
-        is_locked = False
         if notebook_id:
-            is_encrypted = notebook_id in self.manager.encrypted_notebooks
-            if is_encrypted:
-                notebook = self.manager.find_notebook_by_id(notebook_id)
-                is_locked = notebook and not hasattr(notebook, 'custom_path')
-    
+            # Get fresh lock state from master registry
+            try:
+                manager = self.manager
+                fp_hash = manager._compute_fp_hash()
+                registry = manager.load_registry(force_reload=True)
+                notebook_data = registry.get("notebooks", {}).get(notebook_id, {})
+                system_entry = notebook_data.get("systems", {}).get(fp_hash, {})
+                is_locked = system_entry.get("locked", True)
+                is_encrypted = notebook_id in manager.encrypted_notebooks
+            except:
+                is_locked = True
+                is_encrypted = False
+        
+        # Add lock symbol for encrypted notebooks
         if is_encrypted:
             if is_locked:
                 display_title = f"🔒 {title}"
@@ -366,12 +409,12 @@ class ResultFormatter:
                 display_title = f"🔐 {title}"
         else:
             display_title = title
-    
-        # Get counts
+        
+        # Add counts
         note_count = result.get('note_count', 0)
         file_count = result.get('file_count', 0)
         sub_count = result.get('sub_count', 0)
-    
+        
         counts = []
         if note_count > 0:
             counts.append(f"{note_count}n")
@@ -379,14 +422,14 @@ class ResultFormatter:
             counts.append(f"{file_count}f")
         if sub_count > 0:
             counts.append(f"{sub_count}s")
-    
+        
         count_str = f" ({', '.join(counts)})" if counts else ""
         display_title = f"{display_title}{count_str}"
-    
+        
         # Get path
         hierarchy = self._get_hierarchy(notebook_id)
         path = self._format_path(hierarchy)
-    
+        
         return self._build_line(display_title, path, idx)
     
     def _format_historical(self, result, idx=None):

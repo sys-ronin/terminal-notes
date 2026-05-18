@@ -754,9 +754,9 @@ class TerminalNotes:
     
         # VIEW NOTEBOOK (supports v and v#)
         elif cmd.startswith("v"):
-            # 🟢 If no notebooks, ignore
             if not self.manager.notebooks:
                 return "continue"
+            
             if cmd == "v":
                 try:
                     idx = int(self.get_input("Enter notebook number to view: ")) - 1
@@ -775,78 +775,108 @@ class TerminalNotes:
             if 0 <= idx < len(paginated_items):
                 notebook = paginated_items[idx]
                 
-                # Get fresh notebook with correct vault_id
+                # Get fresh notebook
                 fresh_notebook = self.manager.find_notebook_by_id(notebook.id)
                 if fresh_notebook:
                     notebook = fresh_notebook
                 
-                # ========== FIX: Add retry logic for missing vault ==========
-                vault_path = self.manager._get_vault_path(notebook.id)
-                vault_available = vault_path and os.path.exists(vault_path)
-                
-                # If notebook is encrypted and vault missing, show retry options
-                if notebook.id in self.manager.encrypted_notebooks and not vault_available:
-                    retry_count = 0
-                    max_retries = 3
+                # Check if encrypted
+                if notebook.id in self.manager.encrypted_notebooks:
+                    # Read lock state directly from master registry
+                    fp_hash = self.manager._compute_fp_hash()
+                    registry = self.manager.load_registry(force_reload=True)
+                    notebook_data = registry.get("notebooks", {}).get(notebook.id, {})
+                    system_entry = notebook_data.get("systems", {}).get(fp_hash, {})
+                    is_locked = system_entry.get("locked", True)
                     
-                    while retry_count < max_retries:
-                        print(f"\n  ❌ Cannot open '{notebook.name}'")
-                        print(f"     Vault file not found: {vault_path}")
-                        print("     Please insert the USB drive or locate the vault file.")
-                        print()
-                        print("  Options:")
-                        print("    1) Retry (I've inserted the USB drive)")
-                        print("    2) Locate vault file manually")
-                        print("    3) Use recovery phrase (will create new vault)")
-                        print("    4) Cancel")
-                        print()
-                        
-                        choice = self.get_input("  Choose [1-4]: ").strip()
-                        
-                        if choice == "1":
-                            retry_count += 1
-                            vault_path = self.manager._get_vault_path(notebook.id)
-                            if vault_path and os.path.exists(vault_path):
-                                print("\n  ✓ Vault found! Opening notebook...")
-                                self.nav.push("notebook", notebook.id, 0)
-                                return "navigate"
-                            else:
-                                remaining = max_retries - retry_count
-                                if remaining > 0:
-                                    print(f"\n  ⚠️ Vault still not found. {remaining} attempt(s) remaining.")
-                                continue
-                        
-                        elif choice == "2":
-                            new_location = self.get_input("  Enter vault file path: ").strip()
-                            if new_location and os.path.exists(new_location):
-                                from vault_manager import VaultManager
-                                vm = VaultManager(self.manager.app_dir)
-                                vault_id = vm.vault_exists(new_location)
-                                if vault_id:
-                                    self.manager._update_notebook_vault_id(notebook.id, vault_id)
-                                else:
-                                    vault_id = vm.create_vault(new_location)
-                                    self.manager._update_notebook_vault_id(notebook.id, vault_id)
-                                print("  ✓ Vault location updated. Opening notebook...")
-                                self.nav.push("notebook", notebook.id, 0)
-                                return "navigate"
-                            else:
-                                print("  ✗ Invalid vault path.")
-                                continue
-                        
-                        elif choice == "3":
-                            # Use recovery phrase - proceed to unlock
+                    if is_locked:
+                        # Direct unlock - password prompt only (no extra message)
+                        crypto = self.manager.get_crypto(notebook.id)
+                        if crypto:
+                            # Update registry to unlocked
+                            system_entry["locked"] = False
+                            self.manager.save_registry(registry)
+                            
+                            # Update notebook object
+                            notebook.locked = False
+                            notebook._crypto = crypto
+                            
+                            # Update the manager's list
+                            for i, nb in enumerate(self.manager.notebooks):
+                                if nb.id == notebook.id:
+                                    self.manager.notebooks[i] = notebook
+                                    break
+                            
+                            # Proceed to notebook view
                             self.nav.push("notebook", notebook.id, 0)
                             return "navigate"
-                        
                         else:
+                            # Unlock failed (wrong password or cancelled)
                             return "continue"
-                    
-                    print("\n  Too many retries. Please try again later.")
-                    self.get_input("\nPress Enter to continue...")
-                    return "continue"
-                # ========== END FIX ==========
+                    else:
+                        # Notebook is unlocked – verify vault exists
+                        vault_name = system_entry.get("vault", "default")
+                        vault_path = self.manager.vault_manager.get_vault_path(vault_name)
+                        
+                        if not vault_path or not os.path.exists(vault_path):
+                            # Vault missing - recovery flow
+                            retry_count = 0
+                            max_retries = 3
+                            
+                            while retry_count < max_retries:
+                                print(f"\n  ❌ Cannot open '{notebook.name}'")
+                                if vault_name == "default":
+                                    print(f"     Default vault not found at: {vault_path}")
+                                else:
+                                    print(f"     Vault '{vault_name}' not found at: {vault_path}")
+                                print("     Please insert the USB drive or locate the vault file.")
+                                print()
+                                print("  Options:")
+                                print("    1) Retry (I've inserted the USB drive)")
+                                print("    2) Locate vault file manually")
+                                print("    3) Cancel")
+                                print()
+                                
+                                choice = self.get_input("  Choose [1-3]: ").strip()
+                                
+                                if choice == "1":
+                                    retry_count += 1
+                                    vault_path = self.manager.vault_manager.get_vault_path(vault_name)
+                                    if vault_path and os.path.exists(vault_path):
+                                        print("\n  ✓ Vault found! Opening notebook...")
+                                        self.nav.push("notebook", notebook.id, 0)
+                                        return "navigate"
+                                    else:
+                                        remaining = max_retries - retry_count
+                                        if remaining > 0:
+                                            print(f"\n  ⚠️ Vault still not found. {remaining} attempt(s) remaining.")
+                                        continue
+                                
+                                elif choice == "2":
+                                    new_location = self.get_input("  Enter vault file path: ").strip()
+                                    if new_location and os.path.exists(new_location):
+                                        self.manager.vault_manager.set_vault_path(vault_name, new_location)
+                                        self.manager._update_system_entry(notebook.id, {
+                                            "path": system_entry.get("path"),
+                                            "vault": vault_name,
+                                            "entry": system_entry.get("entry"),
+                                            "locked": False
+                                        })
+                                        print("  ✓ Vault location updated. Opening notebook...")
+                                        self.nav.push("notebook", notebook.id, 0)
+                                        return "navigate"
+                                    else:
+                                        print("  ✗ Invalid vault path.")
+                                        continue
+                                
+                                else:
+                                    return "continue"
+                            
+                            print("\n  Too many retries. Please try again later.")
+                            self.get_input("\nPress Enter to continue...")
+                            return "continue"
                 
+                # If we get here, notebook is unencrypted or unlocked and vault is available
                 self.nav.push("notebook", notebook.id, 0)
                 return "navigate"
             else:
@@ -855,9 +885,12 @@ class TerminalNotes:
                 return "continue"
 
         # CREATE
+        # In process_home_command, after handling 'c' command:
         elif cmd == "c":
             result = self.show_create_import_menu()
             if result == "navigate":
+                # Force reload notebooks after creation
+                self.manager.load_all_notebooks(quiet=True)
                 return "navigate"
             return "continue"
         
@@ -960,23 +993,124 @@ class TerminalNotes:
                 # MANAGE - open notebook manager
         # In the main_loop method, find where you handle the notebook manager return
 # Around line where you have:
-        elif cmd == "m":
-            from notebook_manager import NotebookManager
-            nb_manager = NotebookManager(manager=self.manager, ui=self, nav=self.nav)
-            nb_manager.load_notebooks()
-            nb_manager.load_accounts()
-            result = nb_manager.run()
-            if result == "exit_app":
-                return "exit"
-            # 🟢 FIX: Check if notebook manager already set the flag
-            if not hasattr(self.manager, '_skip_next_reload'):
-                self.manager.load_all_notebooks(quiet=False)
-                self.manager._load_session_keys_from_storage()
+        # Manage - opens notebook manager
+        # Manage - opens notebook manager
+        # Manage - opens notebook manager
+        elif cmd.startswith('m'):
+            # Check for 'mf' to open full manager (always works)
+            if cmd == 'mf':
+                from notebook_manager import NotebookManager
+                nb_manager = NotebookManager(manager=self.manager, ui=self, nav=self.nav)
+                nb_manager.load_notebooks()
+                nb_manager.load_accounts()
+                result = nb_manager.run()
+                if result == "exit_app":
+                    return "exit"
+                if not hasattr(self.manager, '_skip_next_reload'):
+                    self.manager.load_all_notebooks(quiet=False)
+                else:
+                    delattr(self.manager, '_skip_next_reload')
+                self.nav.replace_page(0)
+                return "navigate"
+            
+            # If no notebooks, go directly to full manager (no prompt)
+            if not self.manager.notebooks:
+                from notebook_manager import NotebookManager
+                nb_manager = NotebookManager(manager=self.manager, ui=self, nav=self.nav)
+                nb_manager.load_notebooks()
+                nb_manager.load_accounts()
+                result = nb_manager.run()
+                if result == "exit_app":
+                    return "exit"
+                if not hasattr(self.manager, '_skip_next_reload'):
+                    self.manager.load_all_notebooks(quiet=False)
+                else:
+                    delattr(self.manager, '_skip_next_reload')
+                self.nav.replace_page(0)
+                return "navigate"
+            
+            # Handle single 'm' command (notebooks exist)
+            if cmd == 'm':
+                choice = self.get_input("Number or f for full manager: ").strip().lower()
+                if not choice:
+                    return "continue"
+                if choice == 'f':
+                    from notebook_manager import NotebookManager
+                    nb_manager = NotebookManager(manager=self.manager, ui=self, nav=self.nav)
+                    nb_manager.load_notebooks()
+                    nb_manager.load_accounts()
+                    result = nb_manager.run()
+                    if result == "exit_app":
+                        return "exit"
+                    if not hasattr(self.manager, '_skip_next_reload'):
+                        self.manager.load_all_notebooks(quiet=False)
+                    else:
+                        delattr(self.manager, '_skip_next_reload')
+                    self.nav.replace_page(0)
+                    return "navigate"
+                try:
+                    rel_num = int(choice)
+                except ValueError:
+                    print("Invalid input.")
+                    self.get_input("Press Enter to continue...")
+                    return "continue"
             else:
-                # Clear the flag without reloading
-                delattr(self.manager, '_skip_next_reload')
-            self.nav.replace_page(0)
-            return "navigate"
+                try:
+                    rel_num = int(cmd[1:])
+                except ValueError:
+                    print("Invalid format. Use m, m#, or mf")
+                    self.get_input("Press Enter to continue...")
+                    return "continue"
+            
+            start_idx = page * items_per_page
+            end_idx = min(start_idx + items_per_page, len(self.manager.notebooks))
+            items_on_page = end_idx - start_idx
+            
+            if 1 <= rel_num <= items_on_page:
+                absolute_index = start_idx + (rel_num - 1)
+                notebook_obj = self.manager.notebooks[absolute_index]
+                
+                notebook_dict = {
+                    "id": notebook_obj.id,
+                    "name": notebook_obj.name,
+                    "path": notebook_obj.custom_path if hasattr(notebook_obj, 'custom_path') else None,
+                    "encrypted": notebook_obj.id in self.manager.encrypted_notebooks,
+                    "locked": notebook_obj.locked,
+                    "note_count": notebook_obj.get_total_note_count(),
+                    "file_count": notebook_obj.get_file_note_count(),
+                    "sub_count": notebook_obj.get_total_subnotebook_count(),
+                    "git_config": None,
+                    "account": None
+                }
+                
+                if hasattr(self, 'notebook_manager') and self.notebook_manager:
+                    git_config = self.notebook_manager.get_notebook_config(notebook_obj.id)
+                    if git_config:
+                        notebook_dict["git_config"] = git_config
+                    account = self.notebook_manager.get_account_for_notebook(notebook_obj.id)
+                    if account:
+                        notebook_dict["account"] = account
+                
+                from notebook_manager import NotebookManager
+                nb_manager = NotebookManager(manager=self.manager, ui=self, nav=self.nav)
+                nb_manager.load_notebooks()
+                nb_manager.load_accounts()
+                
+                result = nb_manager.show_notebook_view(notebook_dict)
+                if result == "exit_app":
+                    return "exit"
+                
+                if not hasattr(self.manager, '_skip_next_reload'):
+                    self.manager.load_all_notebooks(quiet=False)
+                else:
+                    delattr(self.manager, '_skip_next_reload')
+                
+                self.nav.replace_page(0)
+                return "navigate"
+            else:
+                print(f"Invalid number. Use 1-{items_on_page}")
+                self.get_input("Press Enter to continue...")
+                return "continue"
 
         # In process_home_command, find the deletion section and update it:
 
@@ -1011,15 +1145,26 @@ class TerminalNotes:
                     self.get_input("Press Enter to continue...")
                     return "continue"
 
-                # ========== FIX: Use status to determine lock state ==========
-                status = self.manager.get_notebook_status(notebook.id)
+                # Get current system entry from master registry
+                fp_hash = self.manager._compute_fp_hash()
+                registry = self.manager.load_registry()
+                notebook_data = registry.get("notebooks", {}).get(notebook.id, {})
+                system_entry = notebook_data.get("systems", {}).get(fp_hash, {})
+                
+                current_locked_state = system_entry.get("locked", True)
 
-                if status.get('locked'):
+                if current_locked_state:
                     # CASE 1: Notebook is LOCKED → UNLOCK
                     self.manager._skip_next_reload = True
                     crypto = self.manager.get_crypto(notebook.id)
                     if crypto:
+                        # Update registry to unlocked
+                        system_entry["locked"] = False
+                        #notebook_data["autolock"] = False  # Disable autolock temporarily
+                        self.manager.save_registry(registry)
+
                         notebook.locked = False
+                        notebook._crypto = crypto
                         if hasattr(self, 'notebook_manager') and self.notebook_manager:
                             self.notebook_manager.load_notebooks()
                         self.nav.replace_page(page)
@@ -1029,28 +1174,9 @@ class TerminalNotes:
                     # CASE 2: Notebook is UNLOCKED → LOCK
                     self.manager._skip_next_reload = True
                     
-                    # Get crypto BEFORE removing from session
-                    crypto = self.manager.session_keys.get(notebook.id)
-                    
-                    # Update registry to set locked = True
-                    registry_data = self.manager.load_registry()
-                    
-                    if notebook.id in registry_data["notebooks"]:
-                        entry = registry_data["notebooks"][notebook.id]
-                        
-                        if isinstance(entry, dict):
-                            entry["locked"] = True
-                            self.manager.save_registry(registry_data)
-                            
-                        elif isinstance(entry, str) and crypto:
-                            from notebook_operations import decrypt_registry_entry, encrypt_registry_entry
-                            decrypted = decrypt_registry_entry(entry, crypto)
-                            if decrypted:
-                                decrypted["locked"] = True
-                                new_entry = encrypt_registry_entry(decrypted, crypto)
-                                if new_entry:
-                                    registry_data["notebooks"][notebook.id] = new_entry
-                                    self.manager.save_registry(registry_data)
+                    # Update registry to locked
+                    system_entry["locked"] = True
+                    self.manager.save_registry(registry)
                     
                     # Clear all cached crypto
                     self.manager.unload_notebook(notebook.id)
@@ -1086,7 +1212,6 @@ class TerminalNotes:
 
                     self.nav.replace_page(page)
                     return "navigate"
-                # ========== END FIX ==========
             else:
                 print(f"Invalid notebook number.")
                 self.get_input("Press Enter to continue...")
@@ -1354,7 +1479,7 @@ class TerminalNotes:
                 # Silent ignore - button wouldn't be shown
                 return "continue"
 
-                # VIEW: supports v and v# and sub-notebook quick view if last slot
+        # VIEW: supports v and v# and sub-notebook quick view if last slot
         elif cmd.startswith("v"):
             # If plain 'v', ask for number
             if cmd == "v":
@@ -1845,34 +1970,28 @@ class TerminalNotes:
         if not hasattr(self, '_just_created'):
             self._just_created = False
 
-        # Get current page from navigation
         current = self.nav.current()
         page = current["page"] if current and "page" in current else 0
 
         self.clear_screen()
 
-        # Get terminal size for pagination
         terminal_width, terminal_height = shutil.get_terminal_size()
 
-        # Calculate pagination
-        fixed_ui_lines = 7  # Header + Page indicator + Footer
+        fixed_ui_lines = 7
         available_for_items = terminal_height - fixed_ui_lines
         items_per_page = int(available_for_items * 0.9)
         items_per_page = max(1, items_per_page)
 
-        # Get notebooks and paginate
         numbered_list = self.manager.notebooks
         total_items = len(numbered_list)
         total_pages = (total_items + items_per_page - 1) // items_per_page if total_items > 0 else 1
 
-        # Handle just created notebook
         if self._just_created and total_items > 0:
             page = total_pages - 1
             self._just_created = False
             if current:
                 current['page'] = page
 
-        # Ensure page is valid
         if page >= total_pages:
             page = max(0, total_pages - 1)
             if current:
@@ -1883,114 +2002,61 @@ class TerminalNotes:
         paginated_items = numbered_list[start_idx:end_idx]
         current_page = page + 1
 
-        # 🟢 FIX: Load structure data for unlocked encrypted notebooks
-        registry_data = self.manager.load_registry()
-    
+        # Count display for each notebook
         for notebook in paginated_items:
-            # Check if this is an encrypted notebook
-            if notebook.id in self.manager.encrypted_notebooks:
-                # Check registry to see if it's unlocked
-                entry = registry_data.get("notebooks", {}).get(notebook.id)
-
-                is_unlocked = False
-                if isinstance(entry, dict):
-                    is_unlocked = not entry.get("locked", True) and entry.get("path")
-                elif isinstance(entry, str):
-                    # Encrypted entry - if we have crypto and can decrypt, it's unlocked
-                    crypto = None
+            is_encrypted = notebook.id in self.manager.encrypted_notebooks
+            is_locked = notebook.locked if is_encrypted else False
+            
+            # For unlocked encrypted notebooks, try to get counts
+            if is_encrypted and not is_locked and hasattr(notebook, 'custom_path') and notebook.custom_path:
+                folder_path = notebook.custom_path
+                struct_file = os.path.join(folder_path, "structure.json")
+                if os.path.exists(struct_file):
                     try:
-                        if notebook.id in self.manager.session_keys:
-                            crypto = self.manager.session_keys[notebook.id]
-                    except KeyError:
-                        crypto = None
-                    
-                    if crypto:
-                        from notebook_operations import decrypt_registry_entry
-                        decrypted = decrypt_registry_entry(entry, crypto)
-                        if decrypted:
-                            is_unlocked = not decrypted.get("locked", True) and decrypted.get("path")
-
-                if is_unlocked:
-                    crypto = None
-                    try:
-                        if notebook.id in self.manager.session_keys:
-                            crypto = self.manager.session_keys[notebook.id]
-                    except KeyError:
-                        crypto = None
-                    
-                    if crypto:
-                        # We have crypto and notebook is unlocked - read structure.json
-                        
-                        # Get the path
-                        folder_path = None
-                        if hasattr(notebook, 'custom_path') and notebook.custom_path:
-                            folder_path = notebook.custom_path
-                        else:
-                            # Try to get path from registry
-                            if isinstance(entry, dict):
-                                folder_path = entry.get("path")
-                            elif isinstance(entry, str):
-                                try:
-                                    from notebook_operations import decrypt_registry_entry
-                                    decrypted = decrypt_registry_entry(entry, crypto)
-                                    if decrypted:
-                                        folder_path = decrypted.get("path")
-                                except:
-                                    folder_path = None
-                        
-                            if folder_path and not os.path.isabs(folder_path):
-                                folder_path = os.path.join(self.manager.notebooks_root, folder_path)
-                        
-                        if folder_path and os.path.exists(folder_path):
-                            struct_file = os.path.join(folder_path, "structure.json")
-                            from notebook_operations import read_json
-                        
-                            # Read and decrypt structure.json
-                            struct_data = read_json(struct_file, crypto)
-                        
-                            if struct_data:
-                                # Count items from structure
-                                def count_items(nb_data):
-                                    note_count = 0
-                                    file_count = 0
-                                    for note in nb_data.get('notes', []):
-                                        if note.get('file_extension'):
-                                            file_count += 1
-                                        else:
-                                            note_count += 1
-                                    sub_count = len(nb_data.get('subnotebooks', []))
-                                    for sub in nb_data.get('subnotebooks', []):
-                                        sub_note_count, sub_file_count, sub_sub_count = count_items(sub)
-                                        note_count += sub_note_count
-                                        file_count += sub_file_count
-                                        sub_count += sub_sub_count
-                                    return note_count, file_count, sub_count
+                        crypto = self.manager.session_keys.get(notebook.id)
+                        from notebook_operations import read_json
+                        struct_data = read_json(struct_file, crypto)
+                        if struct_data:
+                            def count_items(nb_data):
+                                note_count = 0
+                                file_count = 0
+                                for note in nb_data.get('notes', []):
+                                    if note.get('file_extension'):
+                                        file_count += 1
+                                    else:
+                                        note_count += 1
+                                sub_count = len(nb_data.get('subnotebooks', []))
+                                for sub in nb_data.get('subnotebooks', []):
+                                    sub_note_count, sub_file_count, sub_sub_count = count_items(sub)
+                                    note_count += sub_note_count
+                                    file_count += sub_file_count
+                                    sub_count += sub_sub_count
+                                return note_count, file_count, sub_count
                             
-                                if "notebooks" in struct_data:
-                                    # Handle wrapped format
-                                    note_count = 0
-                                    file_count = 0
-                                    sub_count = 0
-                                    for nb in struct_data["notebooks"]:
-                                        n, f, s = count_items(nb)
-                                        note_count += n
-                                        file_count += f
-                                        sub_count += s
-                                else:
-                                    # Handle direct notebook format
-                                    note_count, file_count, sub_count = count_items(struct_data)
+                            if "notebooks" in struct_data:
+                                note_count = 0
+                                file_count = 0
+                                sub_count = 0
+                                for nb in struct_data["notebooks"]:
+                                    n, f, s = count_items(nb)
+                                    note_count += n
+                                    file_count += f
+                                    sub_count += s
+                            else:
+                                note_count, file_count, sub_count = count_items(struct_data)
                             
-                                # Store counts on notebook for display
-                                notebook._display_file_count = file_count
-                                notebook._display_note_count = note_count
-                                notebook._display_sub_count = sub_count
-                                continue  # Skip the fallback calculation
-        
-            # Fallback for unencrypted or if structure read failed
+                            notebook._display_file_count = file_count
+                            notebook._display_note_count = note_count
+                            notebook._display_sub_count = sub_count
+                            continue
+                    except:
+                        pass
+            
+            # Fallback counts
             file_count = sum(1 for note in notebook.notes if note.is_file_note)
             regular_note_count = len(notebook.notes) - file_count
             sub_count = len(notebook.subnotebooks)
-        
+            
             notebook._display_file_count = file_count
             notebook._display_note_count = regular_note_count
             notebook._display_sub_count = sub_count
@@ -2010,22 +2076,13 @@ class TerminalNotes:
             print()
         else:
             for i, notebook in enumerate(paginated_items, 1):
-                # Check vault status
-                status = self.manager.get_notebook_status(notebook.id)
+                is_encrypted = notebook.id in self.manager.encrypted_notebooks
+                is_locked = notebook.locked if is_encrypted else False
                 
-                if status.get("locked") and not status.get("vault_available"):
-                    # Vault missing - show special message
-                    display_name = f"🔒 {notebook.name} (⚠️ VAULT MISSING)"
-                elif status.get("locked"):
-                    display_name = f"🔒 {notebook.name}"
-                else:
-                    display_name = f"🔐 {notebook.name}"
-                # Use stored display counts
                 file_count = getattr(notebook, '_display_file_count', 0)
                 regular_note_count = getattr(notebook, '_display_note_count', 0)
                 sub_count = getattr(notebook, '_display_sub_count', 0)
 
-                # Build count display
                 parts = []
                 if regular_note_count > 0:
                     parts.append(f"{regular_note_count} note{'s' if regular_note_count != 1 else ''}")
@@ -2035,27 +2092,26 @@ class TerminalNotes:
                     parts.append(f"{sub_count} sub{'s' if sub_count != 1 else ''}")
 
                 count_display = f" ({', '.join(parts)})" if parts else ""
-            
-                # Determine display name and whether to show counts
-                if notebook.id in self.manager.encrypted_notebooks:
-                    # Check if terminal supports emoji
-                    use_emoji = self.terminal_supports_emoji()
-                    
-                    # ========== FIX: Use status from get_notebook_status ==========
-                    if not status.get('locked'):
-                        # Unlocked
+                
+                # Determine display name with lock symbols
+                use_emoji = self.terminal_supports_emoji()
+                
+                # ========== DEBUG: Print what we're detecting ==========
+                #print(f"[DEBUG] Notebook: {notebook.name}, is_encrypted={is_encrypted}, is_locked={is_locked}")
+                # ========== END DEBUG ==========
+                
+                if is_encrypted:
+                    if not is_locked:
                         if use_emoji:
                             display_name = f"🔐 {notebook.name}"
                         else:
                             display_name = f"[U] {notebook.name}"
                     else:
-                        # Locked
                         if use_emoji:
                             display_name = f"🔒 {notebook.name}"
                         else:
                             display_name = f"[L] {notebook.name}"
-                        count_display = ""  # No counts for locked notebooks
-                    # ========== END FIX ==========
+                        count_display = ""
                 else:
                     display_name = notebook.name
 
@@ -2068,15 +2124,15 @@ class TerminalNotes:
             available_space = term_width - text_width
             left_space = available_space // 2
             right_space = available_space - left_space
-    
+
             left_part = " " * left_space
             right_part = " " * right_space
-    
+
             if current_page > 1 and left_space >= 6:
                 left_part = " " * (left_space - 6) + "<<" + " " * 4
             if current_page < total_pages and right_space >= 6:
                 right_part = " " * 4 + ">>" + " " * (right_space - 6)
-    
+
             print()
             print(left_part + page_text + right_part)
         else:
@@ -2247,12 +2303,33 @@ class TerminalNotes:
             self.nav.pop()
             return
 
-        # Handle encryption if needed (SINGLE BLOCK - REMOVE DUPLICATES)
+        # ========== READ LOCK STATE DIRECTLY FROM MASTER REGISTRY ==========
+        is_locked = True
+        if notebook.id in self.manager.encrypted_notebooks:
+            fp_hash = self.manager._compute_fp_hash()
+            registry = self.manager.load_registry(force_reload=True)
+            notebook_data = registry.get("notebooks", {}).get(notebook.id, {})
+            system_entry = notebook_data.get("systems", {}).get(fp_hash, {})
+            is_locked = system_entry.get("locked", True)
+        # ========== END REGISTRY READ ==========
+
+        # Handle encryption based on lock state
         if notebook_id in self.manager.encrypted_notebooks:
-            crypto = self.manager.get_crypto(notebook_id)
-            if not crypto:
-                self.nav.pop()
-                return
+            if is_locked:
+                # Notebook is locked – need to unlock (will prompt for password)
+                crypto = self.manager.get_crypto(notebook_id)
+                if not crypto:
+                    self.nav.pop()
+                    return
+            else:
+                # Notebook is unlocked – get crypto from cache (no password prompt)
+                crypto = self.manager.session_keys._cache.get(notebook_id)
+                if not crypto:
+                    # Fallback: try get_crypto (should just return cached keys)
+                    crypto = self.manager.get_crypto(notebook_id)
+                    if not crypto:
+                        self.nav.pop()
+                        return
             
             # Refresh notebook after decryption
             notebook = self.manager.find_notebook_by_id(notebook_id)
@@ -2264,7 +2341,7 @@ class TerminalNotes:
             # Ensure crypto is attached
             self.manager.ensure_crypto(notebook)
         else:
-            # For unencrypted notebooks, still ensure crypto is attached
+            # For unencrypted notebooks
             self.manager.ensure_crypto(notebook)
 
         # Check if we just created something
@@ -2303,6 +2380,8 @@ class TerminalNotes:
         print("" * terminal_width)
         print(f"{smart_path:^{terminal_width}}")
         print("" * terminal_width)      
+
+        # ... rest of your method (pagination, notes display, footer) ...   
 
         # DYNAMIC PAGINATION
         try:
@@ -2371,39 +2450,24 @@ class TerminalNotes:
             for i, note in enumerate(paginated_notes, 1):
                 updated = note.updated.strftime("%b %d %H:%M")
                 timestamp_text = f"[Updated: {updated}]"
-                available_for_title = self.terminal_width - len(str(i)) - len(timestamp_text) - 6
-
+                
+                # Calculate available space for title (use full terminal width)
+                number_str = f"[{i}] "
+                timestamp_width = len(timestamp_text)
+                
+                # Reserve space for number and timestamp
+                reserved_space = len(number_str) + timestamp_width
+                max_title_width = self.terminal_width - reserved_space - 2  # -2 for safety margin
+                
                 title_display = note.title
-                if len(title_display) > available_for_title:
-                    title_display = title_display[: available_for_title - 3] + "..."
-
-                padding = available_for_title - len(title_display)
-                print(f"[{i}] {title_display}{' ' * padding}{timestamp_text}")
-
-            if notes_total_pages > 1:
-                page_text = f"Page {notes_current_page} of {notes_total_pages}"
-                centered_text = page_text.center(terminal_width)
-        
-                text_start = (terminal_width - len(page_text)) // 2
-                text_end = text_start + len(page_text)
-                line_chars = list(centered_text)
-        
-                if notes_current_page > 1:
-                    left_arrow_pos = text_start - 4 - 2
-                    if left_arrow_pos >= 0:
-                        line_chars[left_arrow_pos:left_arrow_pos+2] = list("<<")
-        
-                if notes_current_page < notes_total_pages:
-                    right_arrow_pos = text_end + 4
-                    if right_arrow_pos + 2 <= terminal_width:
-                        line_chars[right_arrow_pos:right_arrow_pos+2] = list(">>")
-        
-                line = "".join(line_chars)
-        
-                print()
-                print(line)
-                if notebook.subnotebooks:
-                    print()
+                if len(title_display) > max_title_width:
+                    title_display = title_display[:max_title_width - 3] + "..."
+                
+                # Calculate padding to push timestamp to the right edge
+                used_space = len(number_str) + len(title_display)
+                padding = self.terminal_width - used_space - timestamp_width - 1
+                
+                print(f"{number_str}{title_display}{' ' * padding}{timestamp_text}")
 
         # Activity check
         notebook_has_activity = False
@@ -2419,6 +2483,7 @@ class TerminalNotes:
                         notebook_has_activity = total_commits > 1
         except:
             notebook_has_activity = self.has_descendant_activity(notebook)
+        print()
 
         # Show subnotebooks section
         if notebook.subnotebooks:
@@ -2434,6 +2499,25 @@ class TerminalNotes:
             else:
                 print(f"Sub-notebooks: ({sub_count} subs)")
                 print(f"[{next_number}] View Sub-notebooks =>")
+        
+        # 🟢 MOVED PAGINATION HERE (after subnotebooks)
+        if notes_total_pages > 1:
+            page_text = f"Page {notes_current_page} of {notes_total_pages}"
+            centered_text = page_text.center(terminal_width)
+            text_start = (terminal_width - len(page_text)) // 2
+            text_end = text_start + len(page_text)
+            line_chars = list(centered_text)
+            if notes_current_page > 1:
+                left_arrow_pos = text_start - 4 - 2
+                if left_arrow_pos >= 0:
+                    line_chars[left_arrow_pos:left_arrow_pos+2] = list("<<")
+            if notes_current_page < notes_total_pages:
+                right_arrow_pos = text_end + 4
+                if right_arrow_pos + 2 <= terminal_width:
+                    line_chars[right_arrow_pos:right_arrow_pos+2] = list(">>")
+            line = "".join(line_chars)
+            print()
+            print(line)
         
         if not paginated_notes and not notebook.subnotebooks:
             print()
@@ -3112,9 +3196,12 @@ class TerminalNotes:
             root = self.manager._find_root_notebook(notebook)
     
             # Update the notebook in the manager's notebook list
+            # Also force update the manager's list entry
             for i, nb in enumerate(self.manager.notebooks):
-                if nb.id == root.id:
-                    self.manager.notebooks[i] = root
+                if nb.id == notebook.id:
+                    print(f"[DEBUG] Before update: manager.notebooks[{i}] id={id(nb)}, locked={nb.locked}")
+                    nb.locked = notebook.locked
+                    print(f"[DEBUG] After update: manager.notebooks[{i}] id={id(nb)}, locked={nb.locked}")
                     break
     
             # If this is a subnotebook, also update it in its parent's structure
@@ -3380,10 +3467,17 @@ class TerminalNotes:
         # 🟢 APPEND END
 
         self.get_input("Press Enter to continue...")
+    
+    def create_external_notebook(self, name, external_path, encrypt=False, phrase=None):
+        """
+        Create notebook at external location (USB, network drive, etc.)
+        Delegates to create_notebook with custom_path parameter
+        """
+        # Simply delegate to create_notebook with custom_path
+        return self.manager.create_notebook(name, custom_path=external_path, encrypt=encrypt, phrase=phrase)
         
     def show_create_import_menu(self):
         """Unified menu for create (default/other) and import"""
-        # Path history storage (max 3)
         if not hasattr(self, 'path_history'):
             self.path_history = []
         
@@ -3394,10 +3488,9 @@ class TerminalNotes:
             print("1. Default location (notebooks_root/)")
             print("   → Quick creation in app's default directory")
             print()
-            print("2. Other location (custom path) 🔒 MORE SECURE")
+            print("2. External location (USB/Network drive) 🔒 MORE SECURE")
             print("   → Choose any folder on your system")
-            print("   → Notebook will be created in its own subfolder")
-            print("   → Benefits: Encrypted notebooks stay in YOUR chosen location")
+            print("   → Perfect for encrypted notebooks on USB drives")
             print("   → Easy to backup, sync with cloud, or store on encrypted drive")
             print()
             print("3. Import existing notebook")
@@ -3409,10 +3502,13 @@ class TerminalNotes:
             print("   → Enter repository URL (must end with .git)")
             print("   → Will prompt for account credentials if needed")
             print()
+            print("5. Back")
+            print()
         
-            choice = self.get_input("Choose [1-4]: ")
+            choice = self.get_input("Choose [1-5]: ")
         
             if choice == "1":
+                # Default location - existing code
                 self.clear_screen()
                 self.print_header("Create Notebook - Default Location")
         
@@ -3436,12 +3532,14 @@ class TerminalNotes:
                 continue
             
             elif choice == "2":
+                # External location (USB/Network drive)
                 self.clear_screen()
-                self.print_header("Create Notebook - Custom Location")
+                self.print_header("Create External Notebook")
         
-                print("Enter the directory where you want to create the notebook:")
+                print("Enter the DIRECTORY where you want to create the notebook:")
                 print("  • The notebook will be created in its own subfolder")
-                print("  • Example: /home/user/Projects/ → creates /home/user/Projects/notebook_name/")
+                print("  • Example: /mnt/usb/ → creates /mnt/usb/notebook-name/")
+                print("  • Perfect for encrypted notebooks on removable drives")
                 print()
         
                 if self.path_history:
@@ -3449,9 +3547,9 @@ class TerminalNotes:
                     for i, path in enumerate(self.path_history, 1):
                         print(f"  [{i}] {path}")
                     print()
-                    prompt = f"Custom path [1-{len(self.path_history)} or new path]: "
+                    prompt = f"External path [1-{len(self.path_history)} or new path]: "
                 else:
-                    prompt = "Custom path: "
+                    prompt = "External path: "
         
                 path_input = self.get_path_input(prompt)
                 if not path_input:
@@ -3460,36 +3558,54 @@ class TerminalNotes:
                 if path_input.isdigit() and self.path_history:
                     idx = int(path_input) - 1
                     if 0 <= idx < len(self.path_history):
-                        path = self.path_history[idx]
-                        print(f"Using: {path}")
+                        external_path = self.path_history[idx]
+                        print(f"Using: {external_path}")
                     else:
                         print("Invalid history number.")
                         self.get_input("Press Enter to continue...")
                         continue
                 else:
-                    path = path_input
+                    external_path = path_input
+        
+                # Verify path exists or can be created
+                external_path = os.path.expanduser(external_path)
+                if not os.path.exists(external_path):
+                    print(f"\n  Directory does not exist. Create it? [y/N]: ", end='')
+                    if input().strip().lower() == 'y':
+                        os.makedirs(external_path, exist_ok=True)
+                    else:
+                        print("  Cancelled.")
+                        self.get_input("Press Enter to continue...")
+                        continue
         
                 name = self.get_input("Notebook name: ")
-                if name:
-                    encrypt_choice = self.get_input("Encrypt notebook? [y/N]: ")
-                    encrypt = encrypt_choice.lower() == 'y'
+                if not name:
+                    continue
         
-                    self.clear_screen()
+                encrypt_choice = self.get_input("Encrypt notebook? [y/N]: ")
+                encrypt = encrypt_choice.lower() == 'y'
         
-                    try:
-                        notebook = self.manager.create_notebook(name, path, encrypt=encrypt)
-                        if notebook:
-                            self._just_created = True
-                            print(f"\nPress Enter to continue...", end="")
-                            input()
-                            return "navigate"
-                    except ValueError as e:
-                        print(f"\n✗ Error: {e}")
-                        self.get_input("Press Enter to continue...")
+                self.clear_screen()
+        
+                try:
+                    # This calls create_notebook with custom_path
+                    notebook = self.manager.create_notebook(name, custom_path=external_path, encrypt=encrypt)
+                    if notebook:
+                        # Add to path history
+                        if external_path not in self.path_history:
+                            self.path_history.insert(0, external_path)
+                            self.path_history = self.path_history[:3]
+                        self._just_created = True
+                        print(f"\nPress Enter to continue...", end="")
+                        input()
+                        return "navigate"
+                except ValueError as e:
+                    print(f"\n✗ Error: {e}")
+                    self.get_input("Press Enter to continue...")
                 continue
             
             elif choice == "3":
-                # Import existing notebook from local path
+                # Import existing notebook - existing code
                 self.clear_screen()
                 self.print_header("Import Existing Notebook")
         
@@ -3503,7 +3619,7 @@ class TerminalNotes:
                     for i, path in enumerate(self.path_history, 1):
                         print(f"  [{i}] {path}")
                     print()
-                    prompt = f"Custom path [1-{len(self.path_history)} or new path]: "
+                    prompt = f"Notebook path [1-{len(self.path_history)} or new path]: "
                 else:
                     prompt = "Notebook path: "
         
@@ -3532,8 +3648,8 @@ class TerminalNotes:
                     return "navigate"
                 continue
             
-            # ========== NEW: Option 4 - Import from Git URL ==========
             elif choice == "4":
+                # Import from Git URL - existing code
                 self.clear_screen()
                 self.print_header("Import from Git URL")
         
@@ -3555,19 +3671,17 @@ class TerminalNotes:
                     self.get_input("Press Enter to continue...")
                     continue
         
-                # Use notebook manager's import_from_url
                 from notebook_manager import NotebookManager
                 nb_manager = NotebookManager(manager=self.manager, ui=self, nav=self.nav)
                 nb_manager.load_accounts()
                 nb_manager.import_from_url(url)
                 
-                # Refresh notebooks
                 self.manager.load_all_notebooks(quiet=True)
                 return "navigate"
-            # ========== END NEW ==========
             
-            elif choice == "":
+            elif choice == "5":
                 return "continue"
+            
             else:
                 print("Invalid choice")
                 self.get_input("Press Enter to continue...")

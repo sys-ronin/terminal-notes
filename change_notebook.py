@@ -68,72 +68,28 @@ class ChangeNotebookHandler:
         return None
     
     def _toggle_autolock(self, notebook):
-        """Toggle autolock flag for this notebook"""
+        """Toggle autolock flag for this notebook (UPDATED for master registry)"""
         notebook_id = notebook['id']
         
-        # Load current registry
-        registry_data = self.manager.load_registry()
+        # Load master registry
+        master_registry = self.manager.load_registry(force_reload=True)
         
-        if notebook_id not in registry_data["notebooks"]:
+        if notebook_id not in master_registry.get("notebooks", {}):
             print("\n  ✗ Notebook not found in registry")
             self.get_input("\nPress Enter to continue...")
             return
         
-        entry = registry_data["notebooks"][notebook_id]
-        current_autolock = False
-        
-        # Get current autolock value
-        if isinstance(entry, dict):
-            current_autolock = entry.get("autolock", False)
-        elif isinstance(entry, str):
-            from secure_session import SecureSessionStorage
-            from crypto import Crypto
-            from notebook_operations import decrypt_registry_entry
-            
-            storage = SecureSessionStorage(self.manager.app_dir)
-            stored_pw_key, stored_ph_key = storage.get_keys(notebook_id)
-            
-            if stored_pw_key and stored_ph_key:
-                temp_crypto = Crypto(stored_pw_key, stored_ph_key, "temp")
-                decrypted = decrypt_registry_entry(entry, temp_crypto)
-                if decrypted:
-                    current_autolock = decrypted.get("autolock", False)
+        notebook_data = master_registry["notebooks"][notebook_id]
+        current_autolock = notebook_data.get("autolock", False)
         
         # Toggle
         new_autolock = not current_autolock
         
-        # Update registry
-        if isinstance(entry, dict):
-            entry["autolock"] = new_autolock
-            self.manager.save_registry(registry_data)
-        elif isinstance(entry, str):
-            from secure_session import SecureSessionStorage
-            from crypto import Crypto
-            from notebook_operations import decrypt_registry_entry, encrypt_registry_entry
-            
-            storage = SecureSessionStorage(self.manager.app_dir)
-            stored_pw_key, stored_ph_key = storage.get_keys(notebook_id)
-            
-            if stored_pw_key and stored_ph_key:
-                temp_crypto = Crypto(stored_pw_key, stored_ph_key, "temp")
-                decrypted = decrypt_registry_entry(entry, temp_crypto)
-                if decrypted:
-                    decrypted["autolock"] = new_autolock
-                    
-                    folder_name = None
-                    if notebook.get('path'):
-                        folder_name = os.path.basename(notebook['path'])
-                    else:
-                        clean_name = notebook['name'].replace('🔐 ', '').replace('🔒 ', '')
-                        folder_name = f"{clean_name}-{notebook_id}"
-                    
-                    crypto = Crypto(stored_pw_key, stored_ph_key, folder_name)
-                    new_entry = encrypt_registry_entry(decrypted, crypto)
-                    if new_entry:
-                        registry_data["notebooks"][notebook_id] = new_entry
-                        self.manager.save_registry(registry_data)
+        # Update master registry
+        notebook_data["autolock"] = new_autolock
+        self.manager.save_registry(master_registry)
         
-        # ========== FIX: Clear and accurate message ==========
+        # ========== Clear and accurate message ==========
         if new_autolock:
             print("\n  ✓ Autolock ENABLED")
             print("     Notebook will be LOCKED when you restart the app.")
@@ -142,7 +98,6 @@ class ChangeNotebookHandler:
             print("\n  ✓ Autolock DISABLED")
             print("     Notebook will stay UNLOCKED across app restarts.")
             print("     (Only lock manually with [L] button)")
-        # ========== END FIX ==========
         
         self.get_input("\nPress Enter to continue...")
 
@@ -169,100 +124,130 @@ class ChangeNotebookHandler:
             self._change_password_with_phrase(notebook)
 
     def _change_password_with_old(self, notebook):
-        """Change password using old password"""
+        """Change password using old password - UPDATED for master registry"""
         from getpass import getpass
         from crypto import Crypto, derive_key
         from secure_session import SecureSessionStorage
         import hashlib
         import subprocess
         import platform
-        
+        import time
+        import uuid as uuid_lib
+
         self.clear_screen()
         self.print_header(f"Change Password - {notebook['name']}")
+
+        notebook_id = notebook['id']
+        notebook_obj = self.manager.find_notebook_by_id(notebook_id)
+        if not notebook_obj:
+            print("\n  Notebook not found")
+            self.get_input("Press Enter to continue...")
+            return
+
+        # Get current crypto from session (notebook must be unlocked)
+        crypto = self.manager.session_keys.get(notebook_id)
+        if not crypto:
+            print("\n  Notebook must be unlocked first.")
+            self.get_input("Press Enter to continue...")
+            return
+
+        # Get folder path from master registry
+        fp_hash = self.manager._compute_fp_hash()
+        master_registry = self.manager.load_registry(force_reload=True)
+        notebook_data = master_registry.get("notebooks", {}).get(notebook_id, {})
+        system_entry = notebook_data.get("systems", {}).get(fp_hash, {})
         
+        folder_path = system_entry.get("path")
+        if folder_path and not os.path.isabs(folder_path):
+            folder_path = os.path.join(self.manager.notebooks_root, folder_path)
+        
+        if not folder_path or not os.path.exists(folder_path):
+            print("\n  Notebook path not found")
+            self.get_input("Press Enter to continue...")
+            return
+
+        folder_name = os.path.basename(folder_path)
+        
+        # Get stored password key from current crypto
+        stored_pw_key = crypto.password_key
+        stored_ph_key = crypto.phrase_key
+
         print()
         old_password = getpass("  Old password: ")
         if not old_password:
             print("\n  Cancelled.")
             self.get_input("Press Enter to continue...")
             return
-        
-        # Verify old password
-        folder_path = notebook['path']
-        if not folder_path or not os.path.exists(folder_path):
-            print("\n  Notebook path not found")
-            self.get_input("Press Enter to continue...")
-            return
-        
-        folder_name = os.path.basename(folder_path)
-        notebook_id = notebook['id']
-        
-        storage = SecureSessionStorage(self.manager.app_dir)
-        stored_pw_key, stored_ph_key = storage.get_keys(notebook_id)
-        
-        if not stored_pw_key:
-            print("\n  No stored keys found. Try using recovery phrase.")
-            self.get_input("Press Enter to continue...")
-            return
-        
+
         old_pw_key = derive_key(old_password, folder_name)
-        
+
         if old_pw_key != stored_pw_key:
             print("\n  Wrong password.")
             self.get_input("Press Enter to continue...")
             return
-        
+
         print()
         new_password = getpass("  New password: ")
         if not new_password:
             print("\n  Cancelled.")
             return
-        
+
         confirm = getpass("  Confirm password: ")
         if new_password != confirm:
             print("\n  Passwords do not match.")
             self.get_input("Press Enter to continue...")
             return
-        
+
         new_pw_key = derive_key(new_password, folder_name)
-        
-        crypto = Crypto(stored_pw_key, stored_ph_key, folder_name)
-        
-        test_file = os.path.join(folder_path, ".tn_test")
-        if not crypto.verify_test_marker(test_file):
-            print("\n  Verification failed.")
-            self.get_input("Press Enter to continue...")
-            return
-        
         new_hash = hashlib.sha256(new_password.encode()).hexdigest()
+
+        # Update .tn_recovery and .tn_password files
         recovery_file = os.path.join(folder_path, ".tn_recovery")
         crypto.create_recovery_file(recovery_file, new_hash, new_pw_key)
-        
+
         new_crypto = Crypto(new_pw_key, stored_ph_key, folder_name)
         password_file = os.path.join(folder_path, ".tn_password")
         new_crypto.create_password_file(password_file)
+
+        # Update vault entry for this system
+        entry_uuid = system_entry.get("entry")
+        vault_name = system_entry.get("vault", "default")
+        vault_path = self.manager.vault_manager.get_vault_path(vault_name)
         
-        storage.store_keys(notebook_id, new_pw_key, stored_ph_key)
-        
-        # Get root notebook UUID for security commit
-        notebook_obj = self.manager.find_notebook_by_id(notebook_id)
-        root = self.manager._find_root_notebook(notebook_obj) if notebook_obj else None
-        root_uuid = root.id if root else notebook_id
+        if entry_uuid and vault_path and os.path.exists(vault_path):
+            fingerprint = self.manager._get_system_fingerprint()
+            combined_keys = new_pw_key + stored_ph_key
+            nonce = os.urandom(12)
+            
+            from cryptography.hazmat.primitives.ciphers.aead import AESGCM
+            aesgcm = AESGCM(fingerprint)
+            encrypted_keys = aesgcm.encrypt(nonce, combined_keys, None)
+            
+            self.manager.vault_manager.add_entry_to_vault(vault_path, entry_uuid, {
+                "notebook_id": notebook_id,
+                "timestamp": time.time_ns(),
+                "nonce": nonce.hex(),
+                "encrypted_keys": encrypted_keys.hex()
+            })
+
+        # Update session cache
+        self.manager.session_keys._cache[notebook_id] = new_crypto
+
+        # Git commit
         system_name = platform.node()
-        
         try:
             git_manager = self.manager.get_git_manager_by_path(folder_path)
             git_manager._run_git_command(["git", "add", ".tn_recovery", ".tn_password"])
             git_manager._run_git_command([
                 "git", "commit", "-m",
-                f"SECURITY: password changed | method: old_password | machine: {system_name} | root: {root_uuid}"
+                f"SECURITY: password changed | method: old_password | machine: {system_name} | root: {notebook_id}"
             ])
         except Exception:
             pass
-        
-        # Force lock
-        if notebook_id in self.manager.session_keys:
-            del self.manager.session_keys[notebook_id]
+
+        # Lock the notebook (forces re-unlock with new password)
+        if notebook_id in self.manager.session_keys._cache:
+            del self.manager.session_keys._cache[notebook_id]
         
         for nb in self.manager.notebooks:
             if nb.id == notebook_id:
@@ -271,30 +256,19 @@ class ChangeNotebookHandler:
                 if hasattr(nb, '_crypto'):
                     delattr(nb, '_crypto')
                 break
-        
-        registry_data = self.manager.load_registry()
-        if notebook_id in registry_data["notebooks"]:
-            entry = registry_data["notebooks"][notebook_id]
-            if isinstance(entry, dict):
-                entry["locked"] = True
-                self.manager.save_registry(registry_data)
-            elif isinstance(entry, str):
-                from notebook_operations import decrypt_registry_entry, encrypt_registry_entry
-                decrypted = decrypt_registry_entry(entry, crypto)
-                if decrypted:
-                    decrypted["locked"] = True
-                    new_entry = encrypt_registry_entry(decrypted, new_crypto)
-                    if new_entry:
-                        registry_data["notebooks"][notebook_id] = new_entry
-                        self.manager.save_registry(registry_data)
-        
+
+        # Update master registry lock state
+        if system_entry:
+            system_entry["locked"] = True
+            self.manager.save_registry(master_registry)
+
         print("\n  Password changed.")
         print("  Notebook is now locked.")
         print("  Use your new password to unlock.")
         self.get_input("\nPress Enter to continue...")
 
     def _change_password_with_phrase(self, notebook):
-        """Change password using recovery phrase"""
+        """Change password using recovery phrase - UPDATED for master registry"""
         from getpass import getpass
         from crypto import Crypto, derive_key
         from secure_session import SecureSessionStorage
@@ -302,34 +276,46 @@ class ChangeNotebookHandler:
         import json
         import subprocess
         import platform
-        
+        import time
+        import uuid as uuid_lib
+
         self.clear_screen()
         self.print_header(f"Change Password - {notebook['name']}")
+
+        notebook_id = notebook['id']
         
-        folder_path = notebook['path']
+        # Get folder path from master registry
+        fp_hash = self.manager._compute_fp_hash()
+        master_registry = self.manager.load_registry(force_reload=True)
+        notebook_data = master_registry.get("notebooks", {}).get(notebook_id, {})
+        system_entry = notebook_data.get("systems", {}).get(fp_hash, {})
+        
+        folder_path = system_entry.get("path")
+        if folder_path and not os.path.isabs(folder_path):
+            folder_path = os.path.join(self.manager.notebooks_root, folder_path)
+        
         if not folder_path or not os.path.exists(folder_path):
             print("\n  Notebook path not found")
             self.get_input("Press Enter to continue...")
             return
-        
+
         folder_name = os.path.basename(folder_path)
-        notebook_id = notebook['id']
-        
+
         print()
         phrase = getpass("  Recovery phrase: ")
         if not phrase:
             print("\n  Cancelled.")
             return
-        
+
         phrase_key = derive_key(phrase, folder_name)
         temp_crypto = Crypto(None, phrase_key, folder_name)
-        
+
         test_file = os.path.join(folder_path, ".tn_test")
         if not os.path.exists(test_file):
             print("\n  Invalid notebook format")
             self.get_input("Press Enter to continue...")
             return
-        
+
         try:
             with open(test_file, 'rb') as f:
                 test_data = f.read()
@@ -338,67 +324,81 @@ class ChangeNotebookHandler:
             print("\n  Wrong recovery phrase.")
             self.get_input("Press Enter to continue...")
             return
-        
+
         recovery_file = os.path.join(folder_path, ".tn_recovery")
         if not os.path.exists(recovery_file):
             print("\n  Invalid notebook format")
             self.get_input("Press Enter to continue...")
             return
-        
+
         with open(recovery_file, 'rb') as f:
             recovery_data = f.read()
-        
+
         json_str = temp_crypto.decrypt(recovery_data)
         recovery_info = json.loads(json_str)
         old_pw_key = bytes.fromhex(recovery_info["password_key"])
-        
+
         print()
         new_password = getpass("  New password: ")
         if not new_password:
             print("\n  Cancelled.")
             return
-        
+
         confirm = getpass("  Confirm password: ")
         if new_password != confirm:
             print("\n  Passwords do not match.")
             self.get_input("Press Enter to continue...")
             return
-        
+
         new_pw_key = derive_key(new_password, folder_name)
-        crypto = Crypto(old_pw_key, phrase_key, folder_name)
-        
         new_hash = hashlib.sha256(new_password.encode()).hexdigest()
-        crypto.create_recovery_file(recovery_file, new_hash, new_pw_key)
         
+        crypto = Crypto(old_pw_key, phrase_key, folder_name)
+        crypto.create_recovery_file(recovery_file, new_hash, new_pw_key)
+
         new_crypto = Crypto(new_pw_key, phrase_key, folder_name)
         password_file = os.path.join(folder_path, ".tn_password")
         new_crypto.create_password_file(password_file)
+
+        # Update vault entry for this system
+        entry_uuid = system_entry.get("entry")
+        vault_name = system_entry.get("vault", "default")
+        vault_path = self.manager.vault_manager.get_vault_path(vault_name)
         
-        storage = SecureSessionStorage(self.manager.app_dir)
-        storage.store_keys(notebook_id, new_pw_key, phrase_key)
-        
-        # Get root notebook UUID for security commit
-        notebook_obj = self.manager.find_notebook_by_id(notebook_id)
-        if notebook_obj:
-            root = self.manager._find_root_notebook(notebook_obj)
-            root_uuid = root.id if root else notebook_id
-        else:
-            root_uuid = notebook_id
+        if entry_uuid and vault_path and os.path.exists(vault_path):
+            fingerprint = self.manager._get_system_fingerprint()
+            combined_keys = new_pw_key + phrase_key
+            nonce = os.urandom(12)
+            
+            from cryptography.hazmat.primitives.ciphers.aead import AESGCM
+            aesgcm = AESGCM(fingerprint)
+            encrypted_keys = aesgcm.encrypt(nonce, combined_keys, None)
+            
+            self.manager.vault_manager.add_entry_to_vault(vault_path, entry_uuid, {
+                "notebook_id": notebook_id,
+                "timestamp": time.time_ns(),
+                "nonce": nonce.hex(),
+                "encrypted_keys": encrypted_keys.hex()
+            })
+
+        # Update session cache
+        self.manager.session_keys._cache[notebook_id] = new_crypto
+
+        # Git commit
         system_name = platform.node()
-        
         try:
             git_manager = self.manager.get_git_manager_by_path(folder_path)
             git_manager._run_git_command(["git", "add", ".tn_recovery", ".tn_password"])
             git_manager._run_git_command([
                 "git", "commit", "-m",
-                f"SECURITY: password changed | method: recovery_phrase | machine: {system_name} | root: {root_uuid}"
+                f"SECURITY: password changed | method: recovery_phrase | machine: {system_name} | root: {notebook_id}"
             ])
         except Exception as e:
             print(f"  Git commit failed: {e}")
-        
-        # Force lock
-        if notebook_id in self.manager.session_keys:
-            del self.manager.session_keys[notebook_id]
+
+        # Lock the notebook
+        if notebook_id in self.manager.session_keys._cache:
+            del self.manager.session_keys._cache[notebook_id]
         
         for nb in self.manager.notebooks:
             if nb.id == notebook_id:
@@ -407,23 +407,12 @@ class ChangeNotebookHandler:
                 if hasattr(nb, '_crypto'):
                     delattr(nb, '_crypto')
                 break
-        
-        registry_data = self.manager.load_registry()
-        if notebook_id in registry_data["notebooks"]:
-            entry = registry_data["notebooks"][notebook_id]
-            if isinstance(entry, dict):
-                entry["locked"] = True
-                self.manager.save_registry(registry_data)
-            elif isinstance(entry, str):
-                from notebook_operations import decrypt_registry_entry, encrypt_registry_entry
-                decrypted = decrypt_registry_entry(entry, crypto)
-                if decrypted:
-                    decrypted["locked"] = True
-                    new_entry = encrypt_registry_entry(decrypted, new_crypto)
-                    if new_entry:
-                        registry_data["notebooks"][notebook_id] = new_entry
-                        self.manager.save_registry(registry_data)
-        
+
+        # Update master registry lock state
+        if system_entry:
+            system_entry["locked"] = True
+            self.manager.save_registry(master_registry)
+
         print("\n  Password changed.")
         print("  Notebook is now locked.")
         print("  Use your new password to unlock.")
@@ -626,16 +615,87 @@ class ChangeNotebookHandler:
         self.get_input("\nPress Enter to continue...")
 
     def _show_trusted_devices(self, notebook):
-        """Show trusted devices list with pagination"""
+        """Show trusted devices list from all reachable vaults"""
         from secure_session import SecureSessionStorage
         import shutil
         import socket
+        import os
         
-        storage = SecureSessionStorage(self.app_dir)
-        entries = storage.list_entries(notebook['id'])
-        current_hostname = socket.gethostname()
+        notebook_id = notebook['id']
         
-        if not entries:
+        # Get vault_manager from notebook_manager
+        vm = self.notebook_manager.vault_manager
+        
+        # Get all reachable vaults from master registry
+        try:
+            master_registry = self.manager.load_registry(force_reload=True)
+            fp_hash = self.manager._compute_fp_hash()
+            current_system_name = socket.gethostname()
+        except:
+            master_registry = {}
+            fp_hash = None
+            current_system_name = "unknown"
+        
+        # Collect all entries from all reachable vaults
+        all_entries = []
+        
+        if fp_hash and master_registry:
+            notebook_data = master_registry.get("notebooks", {}).get(notebook_id, {})
+            
+            # Get all system entries for this notebook (from all vaults)
+            systems = notebook_data.get("systems", {})
+            
+            for system_fp_hash, system_entry in systems.items():
+                vault_name = system_entry.get("vault", "default")
+                entry_uuid = system_entry.get("entry")
+                system_name = system_entry.get("system_name", system_fp_hash[:16])  # ← Use stored name
+                
+                if not entry_uuid:
+                    continue
+                
+                # Get vault path
+                vault_path = vm.get_vault_path(vault_name)
+                if not vault_path or not os.path.exists(vault_path):
+                    continue
+                
+                # Read entry from vault to get trusted device info
+                entry_data = vm.get_entry_from_vault(vault_path, entry_uuid)
+                if entry_data:
+                    timestamp = entry_data.get("timestamp", 0)
+                    
+                    # Check if this is the current system
+                    is_current = (system_fp_hash == fp_hash)
+                    
+                    all_entries.append({
+                        "timestamp": timestamp,
+                        "system_name": system_name,
+                        "system_fp_hash": system_fp_hash,
+                        "vault_name": vault_name,
+                        "active": is_current,
+                        "entry_uuid": entry_uuid,
+                        "vault_path": vault_path
+                    })
+        
+        # Also check legacy vaults for backward compatibility
+        try:
+            old_storage = SecureSessionStorage(self.app_dir)
+            old_entries = old_storage.list_entries(notebook_id)
+            for entry in old_entries:
+                # Check if already in list by system_name
+                if not any(e.get("system_name") == entry.get("system_name") for e in all_entries):
+                    all_entries.append({
+                        "timestamp": entry.get("timestamp", 0),
+                        "system_name": entry.get("system_name", "unknown"),
+                        "active": entry.get("active", False),
+                        "legacy": True
+                    })
+        except:
+            pass
+        
+        # Sort by timestamp (newest first)
+        all_entries.sort(key=lambda x: x.get("timestamp", 0), reverse=True)
+        
+        if not all_entries:
             print("\n  No trusted devices found.")
             self.get_input("\nPress Enter to continue...")
             return
@@ -646,7 +706,7 @@ class ChangeNotebookHandler:
             self.clear_screen()
             width, height = shutil.get_terminal_size()
             
-            # Header - centered
+            # Header
             print("" * width)
             header = f"Trusted Devices - {notebook['name']}"
             print(f"{header:^{width}}")
@@ -656,27 +716,34 @@ class ChangeNotebookHandler:
             # Pagination
             from cs_ui import PaginationManager
             items_per_page, total_pages = PaginationManager.calculate(
-                len(entries), height, fixed_lines=8
+                len(all_entries), height, fixed_lines=8
             )
             
             if page >= total_pages:
                 page = max(0, total_pages - 1)
             
             start_idx = page * items_per_page
-            end_idx = min(start_idx + items_per_page, len(entries))
-            page_entries = entries[start_idx:end_idx]
+            end_idx = min(start_idx + items_per_page, len(all_entries))
+            page_entries = all_entries[start_idx:end_idx]
             current_page = page + 1
             
-            # Display entries - LEFT ALIGNED (no spaces before [1])
+            # Display entries
             for i, entry in enumerate(page_entries, 1):
-                is_current = entry.get('system_name') == current_hostname
-                is_active = entry.get('active', False)
+                is_current = entry.get("active", False)
+                system_name = entry.get("system_name", "unknown")
+                vault_name = entry.get("vault_name", "default")
+                is_legacy = entry.get("legacy", False)
                 
-                # Only show [ACTIVE] for active device
-                if is_current and is_active:
-                    line = f"[{i}] {entry['system_name']} [ACTIVE]"
+                if is_current:
+                    line = f"[{i}] {system_name} [ACTIVE]"
                 else:
-                    line = f"[{i}] {entry['system_name']}"
+                    line = f"[{i}] {system_name}"
+                
+                # Show vault info for non-legacy entries
+                if not is_legacy and vault_name != "default":
+                    line += f" (vault: {vault_name})"
+                elif is_legacy:
+                    line += " (legacy)"
                 
                 # Truncate if too long
                 if len(line) > width - 4:
@@ -684,14 +751,14 @@ class ChangeNotebookHandler:
                 
                 print(line)
             
-            # Page indicator with << >> arrows
+            # Page indicator
             if total_pages > 1:
                 print()
                 PaginationManager.show_indicator(page, total_pages, width)
             else:
                 print()
             
-            # Footer - consistent with all other screens
+            # Footer
             print("" * width)
             footer = ["[D]elete", "[B]ack"]
             if total_pages > 1:
@@ -724,10 +791,13 @@ class ChangeNotebookHandler:
                 
                 if 0 <= idx < len(page_entries):
                     entry = page_entries[idx]
-                    is_current = entry.get('system_name') == current_hostname
-                    is_active = entry.get('active', False)
+                    is_current = entry.get("active", False)
+                    system_fp_hash = entry.get("system_fp_hash")
+                    entry_uuid = entry.get("entry_uuid")
+                    vault_path = entry.get("vault_path")
+                    is_legacy = entry.get("legacy", False)
                     
-                    if is_current and is_active:
+                    if is_current:
                         print("\n  ⚠️  WARNING: You are removing THIS machine's trusted status!")
                         print("     After removal:")
                         print("     • This notebook will LOCK immediately")
@@ -741,307 +811,303 @@ class ChangeNotebookHandler:
                             self.get_input("\nPress Enter to continue...")
                             continue
                         
-                        if storage.remove_entry(notebook['id'], entry['timestamp']):
-                            self._lock_notebook_immediately(notebook['id'])
-                            print("\n  ✓ This machine's trust removed.")
-                            print("  ✓ Notebook locked.")
-                            self.get_input("\nPress Enter to continue...")
-                            return
-                        else:
-                            print("\n  ✗ Failed to remove device.")
-                            self.get_input("\nPress Enter to continue...")
+                        # Remove from master registry (system entry)
+                        if system_fp_hash and master_registry:
+                            notebook_data = master_registry.get("notebooks", {}).get(notebook_id, {})
+                            if system_fp_hash in notebook_data.get("systems", {}):
+                                del notebook_data["systems"][system_fp_hash]
+                                if not notebook_data["systems"]:
+                                    del master_registry["notebooks"][notebook_id]
+                                self.manager.save_registry(master_registry)
+                        
+                        # Remove from vault
+                        if entry_uuid and vault_path and os.path.exists(vault_path):
+                            vm.remove_entry_from_vault(vault_path, entry_uuid)
+                        
+                        self._lock_notebook_immediately(notebook_id)
+                        print("\n  ✓ This machine's trust removed.")
+                        print("  ✓ Notebook locked.")
+                        self.get_input("\nPress Enter to continue...")
+                        return
                     
                     else:
                         print(f"\n  Remove trusted device '{entry['system_name']}'?")
-                        print("  This machine will need the recovery phrase to unlock again.")
                         confirm = self.get_input("\n  Confirm removal? [y/N]: ").lower()
                         
                         if confirm == 'y':
-                            if storage.remove_entry(notebook['id'], entry['timestamp']):
-                                print(f"\n  ✓ Device removed successfully!")
-                                entries = storage.list_entries(notebook['id'])
-                                page = 0
-                                if not entries:
-                                    print("\n  No trusted devices remain.")
-                                    self.get_input("\nPress Enter to continue...")
-                                    break
-                            else:
-                                print("\n  ✗ Failed to remove device.")
+                            # Remove from master registry
+                            if system_fp_hash and master_registry:
+                                notebook_data = master_registry.get("notebooks", {}).get(notebook_id, {})
+                                if system_fp_hash in notebook_data.get("systems", {}):
+                                    del notebook_data["systems"][system_fp_hash]
+                                    self.manager.save_registry(master_registry)
+                            
+                            # Remove from vault
+                            if entry_uuid and vault_path and os.path.exists(vault_path):
+                                vm.remove_entry_from_vault(vault_path, entry_uuid)
+                            
+                            # Remove from legacy storage if present
+                            if is_legacy:
+                                old_storage = SecureSessionStorage(self.app_dir)
+                                old_storage.remove_entry(notebook_id, entry.get("timestamp"))
+                            
+                            print(f"\n  ✓ Device removed successfully!")
+                            
+                            # Refresh entries
+                            all_entries = [e for e in all_entries if e.get("system_fp_hash") != system_fp_hash]
+                            page = 0
+                            if not all_entries:
+                                print("\n  No trusted devices remain.")
                                 self.get_input("\nPress Enter to continue...")
+                                break
                         else:
                             print("\n  Cancelled.")
                             self.get_input("\nPress Enter to continue...")
-
-    def _lock_notebook_immediately(self, notebook_id):
-        """Lock a notebook immediately (clear session keys, mark locked)"""
-        notebook = self.manager.find_notebook_by_id(notebook_id)
-        if notebook:
-            # Clear session keys
-            if notebook_id in self.manager.session_keys:
-                del self.manager.session_keys[notebook_id]
-            
-            # Clear crypto from notebook object
-            if hasattr(notebook, '_crypto'):
-                delattr(notebook, '_crypto')
-            
-            # Mark as locked
-            notebook.locked = True
-            notebook.custom_path = None
-            
-            # Update registry
-            registry_data = self.manager.load_registry()
-            if notebook_id in registry_data["notebooks"]:
-                entry = registry_data["notebooks"][notebook_id]
-                if isinstance(entry, dict):
-                    entry["locked"] = True
-                    self.manager.save_registry(registry_data)
-            
-            # Reload notebooks to reflect lock state
-            self.manager.load_all_notebooks(quiet=True)
     
     def _change_vault_location(self, notebook):
-        """Change vault location for this notebook (only when unlocked)"""
+        """Change vault location for current system only (notebook unlocked)"""
         from secure_session import SecureSessionStorage
+        import json
+        import os
         import time
-        import hashlib
-        import socket
-        
+        import uuid as uuid_lib
+
         self.clear_screen()
         self.print_header(f"Change Vault Location - {notebook['name']}")
+
+        notebook_id = notebook['id']
+        crypto = self.manager.session_keys.get(notebook_id)
+        if not crypto:
+            print("\n  Notebook must be unlocked first.")
+            self.get_input("\nPress Enter to continue...")
+            return
+
+        # Get current system fingerprint hash
+        fp_hash = self.manager._compute_fp_hash()
         
-        # Read current vault_id from notebook registry
-        registry_data = self.manager.load_registry()
-        notebook_entry = registry_data.get("notebooks", {}).get(notebook['id'])
+        # Load master registry
+        registry = self.manager.load_registry(force_reload=True)
         
-        current_vault_id = None
-        if isinstance(notebook_entry, dict):
-            current_vault_id = notebook_entry.get("vault_id")
-        elif isinstance(notebook_entry, str):
-            crypto = self.manager.session_keys.get(notebook['id'])
-            if crypto:
-                from notebook_operations import decrypt_registry_entry
-                decrypted = decrypt_registry_entry(notebook_entry, crypto)
-                if decrypted:
-                    current_vault_id = decrypted.get("vault_id")
+        # Get current system entry
+        notebook_data = registry.get("notebooks", {}).get(notebook_id)
+        current_system_entry = None
+        if notebook_data:
+            current_system_entry = notebook_data.get("systems", {}).get(fp_hash)
         
-        # Display current vault
-        if current_vault_id:
-            vault_path = self.notebook_manager.vault_manager.get_vault_path(current_vault_id)
+        if not current_system_entry:
+            print("\n  Notebook not registered on this system.")
+            self.get_input("\nPress Enter to continue...")
+            return
+        
+        # Get current vault info
+        current_vault_name = current_system_entry.get("vault", "default")
+        current_entry_uuid = current_system_entry.get("entry")
+        current_vault_path = self.manager.vault_manager.get_vault_path(current_vault_name)
+        
+        # Format display path
+        def format_vault_path(vault_name, vault_path):
+            if vault_name == "default":
+                return "config/session.vault"
             if vault_path:
-                print(f"\n  Current vault: {current_vault_id} ({vault_path})")
-            else:
-                print(f"\n  Current vault: Default (config/session.vault)")
-                current_vault_id = None
-        else:
-            default_path = os.path.join(self.app_dir, "config", "session.vault")
-            print(f"\n  Current vault: Default ({default_path})")
+                return os.path.basename(vault_path)
+            return "unknown"
         
+        print(f"\n  Current: {current_vault_name if current_vault_name != 'default' else 'DEFAULT'}")
+        print(f"           {format_vault_path(current_vault_name, current_vault_path)}")
         print()
-        
-        # Build options
+
+        # STEP 2: Present options
         options = []
         option_num = 1
 
-        # List all existing custom vaults from vault registry
-        all_vaults = self.notebook_manager.vault_manager.list_vaults()
+        all_vaults = self.manager.vault_manager.list_vaults()
         custom_vaults = {k: v for k, v in all_vaults.items() if k != "default"}
 
-        for vault_id, vault in custom_vaults.items():
-            if current_vault_id and vault_id == current_vault_id:
+        seen_locations = set()
+
+        for vault_name, vault_path in list(custom_vaults.items())[:5]:
+            if current_vault_name == vault_name:
                 continue
-            location = vault.get('location', 'unknown')
-            print(f"  [{option_num}] {vault_id} - {location}")
-            options.append(("existing", option_num, vault_id))
+            if vault_path in seen_locations:
+                continue
+            
+            seen_locations.add(vault_path)
+            display_location = format_vault_path(vault_name, vault_path)
+            print(f"  [{option_num}] {display_location}")
+            options.append(("existing", option_num, vault_name, vault_path))
             option_num += 1
 
-        # Create new vault
-        print(f"  [{option_num}] Create new vault location")
+        print(f"  [{option_num}] Create new vault")
         options.append(("new", option_num))
         option_num += 1
 
-        # Only show "Switch to default vault" if NOT already on default
-        if current_vault_id and current_vault_id != "default":
-            print(f"  [{option_num}] Switch to default vault")
+        if current_vault_name != "default":
+            print(f"  [{option_num}] Default vault")
             options.append(("default", option_num))
             option_num += 1
 
         print(f"  [{option_num}] Back")
-        
         print()
-        choice = self.get_input("  Choose: ").strip()
         
+        choice = self.get_input("  Choose: ").strip()
         if not choice:
             return
-        
+
         try:
             choice_num = int(choice)
         except:
             return
-        
-        target_vault_id = None
-        target_location = None
-        
+
+        target_vault_name = None
+        target_vault_path = None
+
         for opt in options:
             if len(opt) >= 2 and opt[1] == choice_num:
                 if opt[0] == "default":
-                    target_vault_id = None
-                    target_location = "default"
+                    target_vault_name = "default"
+                    target_vault_path = os.path.join(self.app_dir, "config", "session.vault")
                 elif opt[0] == "existing":
-                    target_vault_id = opt[2]
-                    target_location = self.notebook_manager.vault_manager.get_vault_path(target_vault_id)
+                    target_vault_name = opt[2]
+                    target_vault_path = opt[3]
                 elif opt[0] == "new":
                     result = self._create_new_vault_location(notebook)
                     if result:
-                        target_vault_id, target_location = result
+                        target_vault_name, target_vault_path = result
                     else:
                         return
                 elif opt[0] == "back":
                     return
                 break
+
+        if not target_vault_name or not target_vault_path:
+            return
+
+        # STEP 3: Show confirmation
+        self.clear_screen()
+        self.print_header(f"Change Vault Location - {notebook['name']}")
+
+        print()
+        print(f"  From: {current_vault_name if current_vault_name != 'default' else 'DEFAULT'}")
+        print(f"        {format_vault_path(current_vault_name, current_vault_path)}")
+        print()
+        print(f"  To:   {target_vault_name if target_vault_name != 'default' else 'DEFAULT'}")
+        print(f"        {format_vault_path(target_vault_name, target_vault_path)}")
+        print()
         
-        if target_vault_id is None and target_location != "default":
+        confirm = self.get_input("  Confirm change? [y/N]: ").strip().lower()
+        if confirm != 'y':
             print("\n  Cancelled.")
-            self.get_input("Press Enter to continue...")
+            self.get_input("\nPress Enter to continue...")
+            return
+
+        # STEP 4: Ensure target vault exists
+        if not os.path.exists(target_vault_path):
+            os.makedirs(os.path.dirname(target_vault_path), exist_ok=True)
+            if target_vault_name != "default":
+                self.manager.vault_manager.create_vault_file(target_vault_name, os.path.dirname(target_vault_path))
+            else:
+                with open(target_vault_path, 'w') as f:
+                    json.dump({"version": 2, "entries": {}}, f)
+
+        # STEP 5: Get current entry data from old vault
+        entry_data = None
+        if current_entry_uuid:
+            entry_data = self.manager.vault_manager.get_entry_from_vault(current_vault_path, current_entry_uuid)
+        
+        if not entry_data:
+            print("\n  Could not retrieve current vault entry.")
+            self.get_input("\nPress Enter to continue...")
             return
         
-        print(f"\n  Changing vault...")
+        # STEP 6: Write entry to new vault (preserve same entry_uuid)
+        success = self.manager.vault_manager.add_entry_to_vault(
+            target_vault_path, current_entry_uuid, entry_data
+        )
         
-        # Get current system fingerprint
-        if current_vault_id:
-            old_vault_path = self.notebook_manager.vault_manager.get_vault_path(current_vault_id)
-            if old_vault_path:
-                old_storage = SecureSessionStorage(self.app_dir, vault_path=old_vault_path)
-            else:
-                old_storage = SecureSessionStorage(self.app_dir)
-        else:
-            old_storage = SecureSessionStorage(self.app_dir)
+        if not success:
+            print("\n  Failed to write to new vault.")
+            self.get_input("\nPress Enter to continue...")
+            return
         
-        # Get system info
-        fingerprint = old_storage._get_system_fingerprint()
-        fingerprint_hash = hashlib.sha256(fingerprint).hexdigest()[:16]
-        system_name = socket.gethostname()
-        timestamp = time.time_ns()
+        migrated_count = 1
         
-        # Remove from old vault if custom
-        if current_vault_id:
-            old_vault_path = self.notebook_manager.vault_manager.get_vault_path(current_vault_id)
-            if old_vault_path:
-                old_storage.remove_entry(notebook['id'], None)
-                self.notebook_manager.vault_manager.remove_notebook_from_vault(current_vault_id, notebook['id'])
-                print(f"  ✓ Removed from old vault: {current_vault_id}")
+        # Also copy any other entries for this notebook from old vault (other systems)
+        old_vault_data = self.manager.vault_manager.read_vault_file(current_vault_path)
+        for uuid, entry in old_vault_data.get("entries", {}).items():
+            if uuid != current_entry_uuid and entry.get("notebook_id") == notebook_id:
+                self.manager.vault_manager.add_entry_to_vault(target_vault_path, uuid, entry)
+                migrated_count += 1
+
+        # STEP 7: Remove old entries from old vault
+        for uuid in list(old_vault_data.get("entries", {}).keys()):
+            entry = old_vault_data["entries"][uuid]
+            if entry.get("notebook_id") == notebook_id:
+                self.manager.vault_manager.remove_entry_from_vault(current_vault_path, uuid)
+
+        # STEP 8: Update master registry for current system
+        registry = self.manager.load_registry(force_reload=True)
         
-        # Add to new vault
-        if target_location == "default":
-            new_storage = SecureSessionStorage(self.app_dir)
-            new_vault_id = None
-            print(f"  ✓ Switching to default vault")
-        else:
-            new_storage = SecureSessionStorage(self.app_dir, vault_path=target_location)
-            new_vault_id = target_vault_id
-            print(f"  ✓ Adding to new vault: {new_vault_id}")
+        if notebook_id not in registry.get("notebooks", {}):
+            registry["notebooks"][notebook_id] = {
+                "name": notebook['name'],
+                "folder_name": os.path.basename(notebook.get('path', '')),
+                "created": datetime.now().isoformat(),
+                "systems": {}
+            }
         
-        # Add current system to new vault
-        new_storage._add_entry(notebook['id'], fingerprint, fingerprint_hash, system_name, timestamp)
-        print(f"  ✓ System added to new vault")
+        # Update current system's entry
+        registry["notebooks"][notebook_id]["systems"][fp_hash] = {
+            "path": current_system_entry.get("path"),
+            "vault": target_vault_name,
+            "entry": current_entry_uuid,
+            "locked": False  # Keep unlocked after migration
+        }
         
-        # ========== FIX: Re-encrypt registry entry with new vault's crypto ==========
-        # Get the crypto key from the new vault to re-encrypt registry entry
-        new_crypto = None
-        if new_vault_id:
-            if new_vault_id == "default":
-                vault_path = os.path.join(self.app_dir, "config", "session.vault")
-            else:
-                vault_path = target_location
-            
-            if vault_path and os.path.exists(vault_path):
-                from secure_session import SecureSessionStorage
-                from crypto import Crypto
-                temp_storage = SecureSessionStorage(self.app_dir, vault_path=vault_path)
-                pw_key, ph_key = temp_storage.get_keys(notebook['id'])
-                if pw_key and ph_key:
-                    folder_name = os.path.basename(notebook.get('path', '')) if notebook.get('path') else f"{notebook['name']}-{notebook['id']}"
-                    new_crypto = Crypto(pw_key, ph_key, folder_name)
-        # ========== END FIX ==========
+        self.manager.save_registry(registry)
+
+        # STEP 9: Update vault registry (no longer needed - vault paths are in vault_manager)
+        # The vault registry is already updated when we created the vault file
+
+        # STEP 10: Clear caches and reload
+        if notebook_id in self.manager.session_keys:
+            del self.manager.session_keys[notebook_id]
+        if hasattr(self.manager.session_keys, 'clear_cache'):
+            self.manager.session_keys.clear_cache(notebook_id)
+        self.manager.encrypted_notebooks.discard(notebook_id)
         
-        # Update notebook registry with new vault_id
-        registry_data = self.manager.load_registry()
-        notebook_entry = registry_data.get("notebooks", {}).get(notebook['id'])
+        self.manager.load_all_notebooks(quiet=True)
+        self.notebook_manager.load_notebooks()
         
-        if isinstance(notebook_entry, dict):
-            if new_vault_id:
-                notebook_entry["vault_id"] = new_vault_id
-            else:
-                notebook_entry.pop("vault_id", None)
-            self.manager.save_registry(registry_data)
-            print(f"  ✓ Notebook registry updated")
-        elif isinstance(notebook_entry, str):
-            # ========== FIX: Use new_crypto to re-encrypt ==========
-            if new_crypto:
-                from notebook_operations import decrypt_registry_entry, encrypt_registry_entry
-                decrypted = decrypt_registry_entry(notebook_entry, new_crypto)
-                if decrypted:
-                    if new_vault_id:
-                        decrypted["vault_id"] = new_vault_id
-                    else:
-                        decrypted.pop("vault_id", None)
-                    new_entry = encrypt_registry_entry(decrypted, new_crypto)
-                    if new_entry:
-                        registry_data["notebooks"][notebook['id']] = new_entry
-                        self.manager.save_registry(registry_data)
-                        print(f"  ✓ Notebook registry re-encrypted with new vault")
-            else:
-                # Fallback to old method
-                crypto = self.manager.session_keys.get(notebook['id'])
-                if crypto:
-                    from notebook_operations import decrypt_registry_entry, encrypt_registry_entry
-                    decrypted = decrypt_registry_entry(notebook_entry, crypto)
-                    if decrypted:
-                        if new_vault_id:
-                            decrypted["vault_id"] = new_vault_id
-                        else:
-                            decrypted.pop("vault_id", None)
-                        new_entry = encrypt_registry_entry(decrypted, crypto)
-                        if new_entry:
-                            registry_data["notebooks"][notebook['id']] = new_entry
-                            self.manager.save_registry(registry_data)
-                            print(f"  ✓ Notebook registry updated")
-            # ========== END FIX ==========
-        
-        # Update in-memory notebook object
-        notebook['vault_id'] = new_vault_id
-        
-        # Update the notebook in self.notebooks list
-        for i, nb in enumerate(self.notebook_manager.notebooks):
-            if nb.get('id') == notebook['id']:
-                self.notebook_manager.notebooks[i]['vault_id'] = new_vault_id
-                break
-        
-        # Show final message
-        if target_location == "default":
-            print(f"\n  ✓ Vault changed successfully!")
-            print(f"     New vault: Default (config/session.vault)")
-        else:
-            print(f"\n  ✓ Vault changed successfully!")
-            print(f"     New vault: {new_vault_id} ({target_location})")
-        print(f"     Notebook stays UNLOCKED (keys kept in memory)")
-        
+        # Update the passed-in notebook dict
+        fresh_core = self.manager.find_notebook_by_id(notebook_id)
+        if fresh_core:
+            notebook['vault_id'] = target_vault_name if target_vault_name != "default" else None
+            notebook['locked'] = fresh_core.locked
+            notebook['path'] = fresh_core.custom_path
+
+        # STEP 11: Final confirmation
+        display_name = target_vault_name if target_vault_name != "default" else "DEFAULT"
+        print(f"\n  Vault changed to: {display_name}")
+        print(f"  Migrated {migrated_count} trusted device entries")
         self.get_input("\nPress Enter to continue...")
-    
+
+
     def _create_new_vault_location(self, notebook):
-        """Create a new vault location"""
+        """Create a new vault location - with .vault file naming"""
         import json
+        import uuid
         
         self.clear_screen()
         self.print_header("Create New Vault Location")
         
         print()
         print("  Enter the DIRECTORY where the vault file will be stored.")
-        print("  The file 'session.vault' will be created automatically inside.")
+        print("  Vault files use .vault extension (e.g., vault_abc123.vault)")
         print()
         print("  Examples:")
-        print("    /mnt/usb/")
-        print("    /home/user/.vaults/")
-        print("    D:\\vaults\\")
+        print("    /mnt/usb/          → creates /mnt/usb/vault_xxx.vault")
+        print("    /home/user/.vaults/ → creates /home/user/.vaults/vault_xxx.vault")
+        print("    D:\\vaults\\        → creates D:\\vaults\\vault_xxx.vault")
         print()
         
         location = self.get_input("  Directory path: ").strip()
@@ -1055,44 +1121,93 @@ class ChangeNotebookHandler:
         if not os.path.exists(location):
             try:
                 os.makedirs(location, exist_ok=True)
-                print(f"  ✓ Created directory: {location}")
             except Exception as e:
                 print(f"\n  ✗ Cannot create directory: {e}")
                 self.get_input("Press Enter to continue...")
                 return None
         
-        # Full path to vault file
-        vault_file_path = os.path.join(location, "session.vault")
+        # Check for existing .vault files in this directory
+        existing_vault_files = []
+        for f in os.listdir(location):
+            filepath = os.path.join(location, f)
+            if os.path.isfile(filepath) and (f.endswith('.vault') or f == 'session.vault'):
+                existing_vault_files.append(filepath)
         
-        # Check if vault already exists at this location
-        existing_vault_id = self.notebook_manager.vault_manager.vault_exists(vault_file_path)
+        vm = self.notebook_manager.vault_manager
         
-        if existing_vault_id:
-            print(f"\n  ⚠️ A vault already exists at this location.")
-            print(f"     Vault ID: {existing_vault_id}")
-            use_existing = self.get_input("     Use existing vault? [y/N]: ").lower()
-            if use_existing == 'y':
-                self.notebook_manager.vault_manager.add_notebook_to_vault(existing_vault_id, notebook['id'])
-                return existing_vault_id, vault_file_path
+        if existing_vault_files:
+            print(f"\n  Found {len(existing_vault_files)} existing vault file(s):")
+            for i, vf in enumerate(existing_vault_files, 1):
+                vault_id = vm.get_vault_id_from_file(vf)
+                print(f"    [{i}] {os.path.basename(vf)} (ID: {vault_id})")
+            
+            print()
+            print("  Options:")
+            print("    1) Use existing vault")
+            print("    2) Create new vault (will create new .vault file)")
+            print("    3) Cancel")
+            print()
+            
+            choice = self.get_input("  Choose [1-3]: ").strip()
+            
+            if choice == "1":
+                # 🟢 FIX: Auto-select if only one vault exists
+                if len(existing_vault_files) == 1:
+                    selected_file = existing_vault_files[0]
+                    vault_id = vm.get_vault_id_from_file(selected_file)
+                    print(f"\n  Using existing vault: {vault_id}")
+                    
+                    # Ensure vault exists in registry
+                    if not vm.get_vault_path(vault_id):
+                        vm.set_vault_path(vault_id, selected_file)
+                    
+                    return vault_id, selected_file
+                else:
+                    print()
+                    file_choice = self.get_input(f"  Select vault [1-{len(existing_vault_files)}]: ").strip()
+                    try:
+                        idx = int(file_choice) - 1
+                        if 0 <= idx < len(existing_vault_files):
+                            selected_file = existing_vault_files[idx]
+                            vault_id = vm.get_vault_id_from_file(selected_file)
+                            
+                            # Ensure vault exists in registry
+                            if not vm.get_vault_path(vault_id):
+                                vm.set_vault_path(vault_id, selected_file)
+                            
+                            print(f"\n  Using existing vault: {vault_id}")
+                            return vault_id, selected_file
+                    except:
+                        pass
+                    return None
+            
+            elif choice == "2":
+                # Create new vault
+                vault_id = f"vault_{uuid.uuid4().hex[:8]}"
+                vault_file_path = os.path.join(location, f"{vault_id}.vault")
+                
+                if os.path.exists(vault_file_path):
+                    print(f"\n  ✗ File already exists: {vault_file_path}")
+                    self.get_input("Press Enter to continue...")
+                    return None
+                
+                # Create vault file
+                vm.create_vault_file(vault_id, location)
+                
+                print(f"\n  ✓ Created new vault: {vault_id}")
+                print(f"     File: {os.path.basename(vault_file_path)}")
+                return vault_id, vault_file_path
+            
             else:
                 return None
         
-        # Create new vault entry
-        vault_id = self.notebook_manager.vault_manager.create_vault(vault_file_path)
-        self.notebook_manager.vault_manager.add_notebook_to_vault(vault_id, notebook['id'])
+        # No existing vaults - create new
+        vault_id = f"vault_{uuid.uuid4().hex[:8]}"
+        vault_file_path = os.path.join(location, f"{vault_id}.vault")
         
-        # Create empty vault file
-        try:
-            empty_vault = {"notebooks": {}}
-            with open(vault_file_path, 'w') as f:
-                json.dump(empty_vault, f)
-            print(f"  ✓ Created vault file: {vault_file_path}")
-        except Exception as e:
-            print(f"  ⚠️ Could not create vault file: {e}")
+        vm.create_vault_file(vault_id, location)
         
-        print(f"\n  ✓ New vault created: {vault_id}")
-        print(f"     Location: {vault_file_path}")
-        
-        self.get_input("\nPress Enter to continue...")
+        print(f"\n  ✓ Created new vault: {vault_id}")
+        print(f"     File: {os.path.basename(vault_file_path)}")
         
         return vault_id, vault_file_path

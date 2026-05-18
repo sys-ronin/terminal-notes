@@ -360,9 +360,15 @@ class NotebookManager:
         self.notebooks = []
         registry_data = self.load_registry()
 
-        # ========== SURGICAL FIX: Track first load for autolock ==========
         is_first_load = not hasattr(self, '_autolock_applied')
-        # ========== END FIX ==========
+        
+        # Get master registry for lock state
+        try:
+            master_registry = self.manager.load_registry(force_reload=True)
+            fp_hash = self.manager._compute_fp_hash()
+        except:
+            master_registry = {}
+            fp_hash = None
 
         for notebook_id, entry in registry_data.get("notebooks", {}).items():
             path = ""
@@ -375,148 +381,69 @@ class NotebookManager:
             account = None
             is_locked = True
             autolock = False
+            vault_id = None
             
-            # Handle encrypted entries
+            # ========== FIX: Skip legacy encrypted string entries ==========
             if isinstance(entry, str):
-                is_encrypted = True
-                
-                # Try to get crypto from session first (if unlocked in main app)
-                crypto = self.manager.session_keys.get(notebook_id)
-                
-                # Also try to get from secure session
-                if not crypto:
-                    from secure_session import SecureSessionStorage
-                    storage = SecureSessionStorage(self.manager.app_dir)
-                    stored_pw, stored_ph = storage.get_keys(notebook_id)
-                    if stored_pw and stored_ph:
-                        from crypto import Crypto
-                        # Need folder name to create crypto
-                        folder_name = None
-                        # First try to find from notebooks_root
-                        for folder in os.listdir(self.manager.notebooks_root):
-                            if folder.endswith(notebook_id):
-                                folder_name = folder
-                                break
-                        # If not found, try to get from registry path
-                        if not folder_name:
-                            from notebook_operations import decrypt_registry_entry
-                            # Create temp crypto to decrypt just the path
-                            temp_crypto = Crypto(stored_pw, stored_ph, "temp")
-                            decrypted = decrypt_registry_entry(entry, temp_crypto)
-                            if decrypted:
-                                path_from_reg = decrypted.get("path", "")
-                                if path_from_reg:
-                                    folder_name = os.path.basename(path_from_reg)
-                        
-                        if folder_name:
-                            crypto = Crypto(stored_pw, stored_ph, folder_name)
-                            self.manager.session_keys[notebook_id] = crypto
-                
-                if crypto:
-                    from notebook_operations import decrypt_registry_entry
-                    decrypted = decrypt_registry_entry(entry, crypto)
-                    if decrypted:
-                        # Get raw name and STRIP any existing lock symbols
-                        raw_name = decrypted.get("name", "Unknown")
+                # Legacy encrypted entry - skip processing, will be handled by main UI
+                # Just create a basic placeholder
+                # Try to get name from folder
+                for folder in os.listdir(self.manager.notebooks_root):
+                    if folder.endswith(notebook_id):
+                        if '-' in folder:
+                            raw_name = folder.rsplit('-', 1)[0]
+                        else:
+                            raw_name = folder
                         name = raw_name.replace('🔐 ', '').replace('🔒 ', '').strip()
-                        path = decrypted.get("path", "")
-                        is_locked = decrypted.get("locked", True)
-                        autolock = decrypted.get("autolock", False)
-                        
-                        # Get absolute path
-                        if path and not os.path.isabs(path):
-                            path = os.path.join(self.manager.notebooks_root, path)
-                        
-                        # ========== SURGICAL FIX: Only apply autolock on first load ==========
-                        if autolock and is_first_load:
-                            is_locked = True
-                            # Clear any cached crypto only on first load
-                            if notebook_id in self.manager.session_keys:
-                                del self.manager.session_keys[notebook_id]
-                        elif autolock and not is_first_load:
-                            # After first load, preserve the current lock state from registry
-                            is_locked = decrypted.get("locked", True)
-                        # ========== END FIX ==========
-                        
-                        # Load counts if unlocked
-                        if not is_locked and path and os.path.exists(path):
-                            struct_file = os.path.join(path, "structure.json")
-                            if os.path.exists(struct_file):
-                                try:
-                                    from notebook_operations import read_json
-                                    struct_data = read_json(struct_file, crypto)
-                                    if struct_data:
-                                        def count_items(nb_data):
-                                            n = 0
-                                            f = 0
-                                            s = 0
-                                            for note in nb_data.get("notes", []):
-                                                if note.get("file_extension"):
-                                                    f += 1
-                                                else:
-                                                    n += 1
-                                            s += len(nb_data.get("subnotebooks", []))
-                                            for sub in nb_data.get("subnotebooks", []):
-                                                sub_n, sub_f, sub_s = count_items(sub)
-                                                n += sub_n
-                                                f += sub_f
-                                                s += sub_s
-                                            return n, f, s
-                                        
-                                        if "notebooks" in struct_data:
-                                            for nb in struct_data["notebooks"]:
-                                                n, f, s = count_items(nb)
-                                                note_count += n
-                                                file_count += f
-                                                sub_count += s
-                                        else:
-                                            note_count, file_count, sub_count = count_items(struct_data)
-                                except:
-                                    pass
-                    else:
-                        # Can't decrypt, use folder name as fallback
-                        for folder in os.listdir(self.manager.notebooks_root):
-                            if folder.endswith(notebook_id):
-                                if '-' in folder:
-                                    raw_name = folder.rsplit('-', 1)[0]
-                                else:
-                                    raw_name = folder
-                                name = raw_name.replace('🔐 ', '').replace('🔒 ', '').strip()
-                                path = os.path.join(self.manager.notebooks_root, folder)
-                                break
-                else:
-                    # No crypto, use folder name as fallback
-                    for folder in os.listdir(self.manager.notebooks_root):
-                        if folder.endswith(notebook_id):
-                            if '-' in folder:
-                                raw_name = folder.rsplit('-', 1)[0]
-                            else:
-                                raw_name = folder
-                            name = raw_name.replace('🔐 ', '').replace('🔒 ', '').strip()
-                            path = os.path.join(self.manager.notebooks_root, folder)
-                            break
+                        path = os.path.join(self.manager.notebooks_root, folder)
+                        break
+                
+                self.notebooks.append({
+                    "id": notebook_id,
+                    "name": name,
+                    "path": path,
+                    "encrypted": True,
+                    "locked": True,
+                    "autolock": False,
+                    "note_count": 0,
+                    "file_count": 0,
+                    "sub_count": 0,
+                    "git_config": None,
+                    "account": None,
+                    "vault_id": None
+                })
+                continue
             
-            elif isinstance(entry, dict):
-                # Unencrypted entry
+            # Get lock state from master registry (only for dict entries)
+            master_locked = None
+            if fp_hash and master_registry and isinstance(entry, dict):
+                notebook_data = master_registry.get("notebooks", {}).get(notebook_id, {})
+                if isinstance(notebook_data, dict):
+                    system_entry = notebook_data.get("systems", {}).get(fp_hash, {})
+                    if system_entry:
+                        master_locked = system_entry.get("locked", True)
+                        vault_id = system_entry.get("vault", "default")
+            
+            # Handle dict entries (new format or unencrypted)
+            if isinstance(entry, dict):
                 raw_name = entry.get("name", "Unknown")
                 name = raw_name.replace('🔐 ', '').replace('🔒 ', '').strip()
                 path = entry.get("path", "")
                 is_encrypted = entry.get("encrypted", False)
-                is_locked = entry.get("locked", False)
                 autolock = entry.get("autolock", False)
                 
                 if path and not os.path.isabs(path):
                     path = os.path.join(self.manager.notebooks_root, path)
                 
-                # ========== SURGICAL FIX: Only apply autolock on first load ==========
-                if autolock and is_first_load:
-                    is_locked = True
-                elif autolock and not is_first_load:
-                    # After first load, preserve the current lock state from registry
-                    is_locked = entry.get("locked", True)
-                # ========== END FIX ==========
+                # Use master registry lock state if available
+                if master_locked is not None:
+                    is_locked = master_locked
+                else:
+                    if autolock and is_first_load:
+                        is_locked = True
+                    elif autolock and not is_first_load:
+                        is_locked = entry.get("locked", True)
                 
-                # Load counts for unencrypted notebooks
                 if path and os.path.exists(path):
                     struct_file = os.path.join(path, "structure.json")
                     if os.path.exists(struct_file):
@@ -556,19 +483,8 @@ class NotebookManager:
             git_config = self.get_notebook_config(notebook_id)
             account = self.get_account_for_notebook(notebook_id)
             
-            # Store clean name without ANY lock symbols
             clean_name = name.replace('🔐 ', '').replace('🔒 ', '').strip()
             
-            # After loading notebook, check for vault_id
-            vault_id = None
-            if isinstance(entry, dict):
-                vault_id = entry.get("vault_id")
-            elif isinstance(entry, str) and crypto:
-                decrypted = decrypt_registry_entry(entry, crypto)
-                if decrypted:
-                    vault_id = decrypted.get("vault_id")
-            
-            # Store the raw clean name - lock symbol will be added during display
             self.notebooks.append({
                 "id": notebook_id,
                 "name": clean_name,
@@ -581,12 +497,10 @@ class NotebookManager:
                 "sub_count": sub_count,
                 "git_config": git_config,
                 "account": account,
-                "vault_id": vault_id  # ← NEW
+                "vault_id": vault_id
             })
         
-        # ========== SURGICAL FIX: Mark that autolock has been applied ==========
         self._autolock_applied = True
-        # ========== END FIX ==========
             
     def check_repos_parallel(self, repos, account, token, local_notebooks):
         """Check multiple repositories in parallel with optimized settings"""
@@ -794,101 +708,106 @@ class NotebookManager:
         print()
 
     def show_home(self):
+        """Show notebook manager home - ALWAYS get fresh data from main manager"""
         self.clear_screen()
         width, height = self.get_terminal_size()
-        self.load_notebooks()
-        self.load_accounts()
-    
-        # Calculate pagination - EXACT same as main app homepage
-        fixed_ui_lines = 7  # Header + Page indicator + Footer
+        
+        # ========== FORCE FRESH DATA FROM MAIN MANAGER ==========
+        # Reload notebooks from main manager (not from internal cache)
+        self.manager.load_all_notebooks(quiet=True)
+        main_notebooks = self.manager.notebooks
+        
+        # Build notebook list from main manager's notebooks
+        fresh_notebooks = []
+        for nb in main_notebooks:
+            # Get lock state from master registry
+            try:
+                master_registry = self.manager.load_registry(force_reload=True)
+                fp_hash = self.manager._compute_fp_hash()
+                notebook_data = master_registry.get("notebooks", {}).get(nb.id, {})
+                system_entry = notebook_data.get("systems", {}).get(fp_hash, {})
+                is_locked = system_entry.get("locked", True)
+                is_encrypted = nb.id in self.manager.encrypted_notebooks
+            except:
+                is_locked = getattr(nb, 'locked', True)
+                is_encrypted = nb.id in self.manager.encrypted_notebooks
+            
+            # Get counts
+            note_count = nb.get_total_note_count()
+            file_count = nb.get_file_note_count()
+            sub_count = nb.get_total_subnotebook_count()
+            regular_note_count = note_count - file_count
+            
+            fresh_notebooks.append({
+                "id": nb.id,
+                "name": nb.name,
+                "locked": is_locked,
+                "encrypted": is_encrypted,
+                "note_count": regular_note_count,
+                "file_count": file_count,
+                "sub_count": sub_count,
+                "git_config": self.get_notebook_config(nb.id),
+                "account": self.get_account_for_notebook(nb.id)
+            })
+        
+        # Replace internal list with fresh data
+        self.notebooks = fresh_notebooks
+        
+        # Calculate pagination
+        fixed_ui_lines = 7
         available_for_items = height - fixed_ui_lines
         items_per_page = int(available_for_items * 0.9)
         items_per_page = max(1, items_per_page)
-    
+
         total_pages = (len(self.notebooks) + items_per_page - 1) // items_per_page if self.notebooks else 1
-    
+
         if self.page >= total_pages:
             self.page = max(0, total_pages - 1)
-    
+
         start = self.page * items_per_page
         end = min(start + items_per_page, len(self.notebooks))
         paginated = self.notebooks[start:end]
         current_page = self.page + 1
-    
-        # Header - no "Available Notebooks:" text
+
         self.print_header("Notebook Manager")
-    
-        # Display notebooks
+
         if not paginated:
             print("No notebooks found.")
             print()
         else:
             for idx, nb in enumerate(paginated, 1):
-                # Get live notebook from shared manager
-                live_notebook = self.manager.find_notebook_by_id(nb['id']) if self.manager else None
-            
-                # Initialize variables
-                encrypted_marker = ""
-                emoji_extra = 0
-                count_display = ""
-            
-                # Determine lock status from live object
-                # ========== FIX: Use get_notebook_status for lock detection ==========
-                if live_notebook:
-                    is_encrypted = live_notebook.id in self.manager.encrypted_notebooks
-                    # Use status to determine lock state
-                    status = self.manager.get_notebook_status(live_notebook.id)
-                    is_locked = status.get('locked', True) if is_encrypted else False
-                # ========== END FIX ==========
-
-                    if is_encrypted and not is_locked:
+                # Determine display
+                is_encrypted = nb.get('encrypted', False)
+                is_locked = nb.get('locked', True)
+                
+                if is_encrypted:
+                    if not is_locked:
                         encrypted_marker = "🔐 "
-                        emoji_extra = 1
-                        # Show counts for unlocked encrypted notebooks
-                        parts = []
-                        note_count = nb.get('note_count', 0)
-                        file_count = nb.get('file_count', 0)
-                        if note_count > 0:
-                            parts.append(f"{note_count} note{'s' if note_count != 1 else ''}")
-                        if file_count > 0:
-                            parts.append(f"{file_count} file{'s' if file_count != 1 else ''}")
-                        count_display = f" ({', '.join(parts)})" if parts else ""
-                    elif is_encrypted and is_locked:
-                        encrypted_marker = "🔒 "
-                        emoji_extra = 1
-                        count_display = ""  # NO COUNTS for locked notebooks
                     else:
-                        encrypted_marker = ""
-                        emoji_extra = 0
-                        # Show counts for unencrypted notebooks
-                        parts = []
-                        note_count = nb.get('note_count', 0)
-                        file_count = nb.get('file_count', 0)
-                        if note_count > 0:
-                            parts.append(f"{note_count} note{'s' if note_count != 1 else ''}")
-                        if file_count > 0:
-                            parts.append(f"{file_count} file{'s' if file_count != 1 else ''}")
-                        count_display = f" ({', '.join(parts)})" if parts else ""
+                        encrypted_marker = "🔒 "
                 else:
-                    # Fallback to cached data if live not found
-                    encrypted_marker = "🔐 " if nb.get("encrypted") else ""
-                    emoji_extra = 1 if encrypted_marker else 0
-                    parts = []
-                    note_count = nb.get('note_count', 0)
-                    file_count = nb.get('file_count', 0)
-                    if note_count > 0:
-                        parts.append(f"{note_count} note{'s' if note_count != 1 else ''}")
-                    if file_count > 0:
-                        parts.append(f"{file_count} file{'s' if file_count != 1 else ''}")
-                    count_display = f" ({', '.join(parts)})" if parts else ""
-
+                    encrypted_marker = ""
+                
+                # Build count display
+                parts = []
+                note_count = nb.get('note_count', 0)
+                file_count = nb.get('file_count', 0)
+                sub_count = nb.get('sub_count', 0)
+                
+                if note_count > 0:
+                    parts.append(f"{note_count} note{'s' if note_count != 1 else ''}")
+                if file_count > 0:
+                    parts.append(f"{file_count} file{'s' if file_count != 1 else ''}")
+                if sub_count > 0:
+                    parts.append(f"{sub_count} sub{'s' if sub_count != 1 else ''}")
+                
+                count_display = f" ({', '.join(parts)})" if parts else ""
+                
                 left_part = f"[{idx}] {encrypted_marker}{nb['name']}{count_display}"
             
                 # Build right part with git info
                 if nb.get("git_config") and nb.get("account"):
                     account = nb["account"]
-                    repo = nb["git_config"].get("repo", "")
-                
                     platform = account.get('platform', 'github')
                     if platform == 'github':
                         prefix = 'gh'
@@ -898,7 +817,7 @@ class NotebookManager:
                         prefix = 'bb'
                     else:
                         prefix = 'oth'
-                
+                    
                     right_part = f"[{prefix}/{account['username']}]"
                     if nb["git_config"].get("last_push"):
                         push_time = datetime.fromisoformat(nb["git_config"]["last_push"])
@@ -909,6 +828,7 @@ class NotebookManager:
             
                 # Calculate padding for alignment
                 total_width = width - 3
+                emoji_extra = 1 if encrypted_marker else 0
                 actual_left_len = len(left_part) + emoji_extra
                 if actual_left_len + len(right_part) + 2 > total_width:
                     max_left = total_width - len(right_part) - 5 - emoji_extra
@@ -917,8 +837,8 @@ class NotebookManager:
                         actual_left_len = len(left_part) + emoji_extra
                 padding = total_width - actual_left_len - len(right_part)
                 print(f"{left_part}{' ' * padding}{right_part}")
-    
-        # Page indicator - same as homepage
+
+        # Page indicator
         if total_pages > 1:
             page_text = f"Page {current_page} of {total_pages}"
             text_width = len(page_text)
@@ -938,8 +858,8 @@ class NotebookManager:
             print(left_part + page_text + right_part)
         else:
             print()
-    
-        # Footer options - REMOVE [I]mport
+
+        # Footer options
         options = ["[V]iew", "[A]ccounts"]
         if total_pages > 1:
             if current_page < total_pages:
@@ -951,8 +871,7 @@ class NotebookManager:
         else:
             options.append("[B]ack")
             options.append("[Q]uit")
-        
-    
+
         self.print_footer("  ".join(options))
 
     def show_import_screen(self):
@@ -1744,13 +1663,16 @@ class NotebookManager:
             return None
         
     def register_cloned_notebook(self, path, crypto=None):
-        """Register a cloned notebook in the registry"""
+        """Register a cloned notebook in the master registry"""
         import json
         from notebook_operations import read_json
         from terminal_notes_core import Notebook
         from datetime import datetime
         import os
         import shutil
+        import time
+        import uuid as uuid_lib
+        import socket
 
         struct_file = os.path.join(path, "structure.json")
         if not os.path.exists(struct_file):
@@ -1766,8 +1688,9 @@ class NotebookManager:
 
             folder_name = os.path.basename(path)
             struct_data = None
-            password_key = None
-            phrase_key = None
+            crypto_obj = None
+            notebook_name = None
+            notebook_id = None
             
             if is_encrypted:
                 print(f"\n  🔒 Encrypted notebook detected")
@@ -1776,7 +1699,6 @@ class NotebookManager:
                 from getpass import getpass
                 attempts = 0
                 max_attempts = 3
-                crypto_obj = None
                 
                 while attempts < max_attempts and not crypto_obj:
                     remaining = max_attempts - attempts
@@ -1828,6 +1750,18 @@ class NotebookManager:
                         if crypto_obj.decrypt_with_combined(password_data):
                             struct_data = read_json(struct_file, crypto_obj)
                             if struct_data:
+                                # Extract name and ID from structure.json ONLY
+                                if "notebooks" in struct_data and struct_data["notebooks"]:
+                                    notebook_data = struct_data["notebooks"][0]
+                                    notebook_name = notebook_data.get("name")
+                                    notebook_id = notebook_data.get("id")
+                                elif "name" in struct_data:
+                                    notebook_name = struct_data.get("name")
+                                    notebook_id = struct_data.get("id")
+                                
+                                # Clean name (remove lock symbols)
+                                if notebook_name:
+                                    notebook_name = notebook_name.replace('🔐 ', '').replace('🔒 ', '').strip()
                                 break
                             else:
                                 crypto_obj = None
@@ -1842,77 +1776,98 @@ class NotebookManager:
                 
                 if not struct_data:
                     print(f"  ✗ Failed to import after {max_attempts} attempts")
-                    shutil.rmtree(path, ignore_errors=True)
                     return None
             else:
                 with open(struct_file, 'r') as f:
                     struct_data = json.load(f)
-
-            # Extract notebook info
-            if "notebooks" in struct_data and struct_data["notebooks"]:
-                name = struct_data["notebooks"][0].get("name", "Unknown")
-                notebook_id = struct_data["notebooks"][0].get("id")
-            elif "name" in struct_data:
-                name = struct_data.get("name", "Unknown")
-                notebook_id = struct_data.get("id")
-            else:
-                if '-' in folder_name:
-                    name = folder_name.split('-')[0]
-                    notebook_id = folder_name.split('-')[-1]
-                else:
-                    name = folder_name
-                    notebook_id = datetime.now().strftime("%Y%m%d%H%M%S")
-
-            # Store keys in secure session
-            # Store keys in secure session
-            if is_encrypted and crypto_obj:
-                from secure_session import SecureSessionStorage
-                storage = SecureSessionStorage(self.app_dir)
-                storage.store_keys(notebook_id, password_key, phrase_key)
-
-            # Load registry
-            registry = self.load_registry()
-
-            # Store path
-            if path.startswith(self.notebooks_root):
-                rel_path = os.path.relpath(path, self.notebooks_root)
-            else:
-                rel_path = path
-
-            # Add to registry
-            if is_encrypted and crypto_obj:
-                self.manager.encrypted_notebooks.add(notebook_id)
                 
-                from notebook_operations import encrypt_registry_entry
-                entry_data = {
-                    "name": name,
-                    "path": rel_path,
-                    "encrypted": True,
-                    "locked": True,
-                    "created": datetime.now().isoformat()
-                }
-                encrypted_entry = encrypt_registry_entry(entry_data, crypto_obj)
-                if encrypted_entry:
-                    registry["notebooks"][notebook_id] = encrypted_entry
-                else:
-                    registry["notebooks"][notebook_id] = entry_data
+                # Extract name and ID from structure.json
+                if "notebooks" in struct_data and struct_data["notebooks"]:
+                    notebook_data = struct_data["notebooks"][0]
+                    notebook_name = notebook_data.get("name")
+                    notebook_id = notebook_data.get("id")
+                elif "name" in struct_data:
+                    notebook_name = struct_data.get("name")
+                    notebook_id = struct_data.get("id")
+
+            # Generate ID if not found
+            if not notebook_id:
+                notebook_id = datetime.now().strftime("%Y%m%d%H%M%S")
+
+            # ========== Register in master registry ==========
+            from vault_manager import VaultManager
+            vm = VaultManager(self.app_dir)
+            
+            # Ensure default vault exists
+            default_dir = os.path.join(self.app_dir, "config")
+            default_path = os.path.join(default_dir, "session.vault")
+            os.makedirs(default_dir, exist_ok=True)
+            
+            if not os.path.exists(default_path):
+                vm.create_vault_file("default", default_dir)
+            
+            # Create vault entry if encrypted
+            entry_uuid = None
+            if is_encrypted and crypto_obj:
+                fingerprint = self.manager._get_system_fingerprint()
+                combined_keys = crypto_obj.password_key + crypto_obj.phrase_key
+                nonce = os.urandom(12)
+                
+                from cryptography.hazmat.primitives.ciphers.aead import AESGCM
+                aesgcm = AESGCM(fingerprint)
+                encrypted_keys = aesgcm.encrypt(nonce, combined_keys, None)
+                
+                entry_uuid = str(uuid_lib.uuid4())
+                vm.add_entry_to_vault(default_path, entry_uuid, {
+                    "notebook_id": notebook_id,
+                    "timestamp": time.time_ns(),
+                    "nonce": nonce.hex(),
+                    "encrypted_keys": encrypted_keys.hex()
+                })
+                
+                # Store in session cache
+                self.manager.session_keys._cache[notebook_id] = crypto_obj
+                self.manager.encrypted_notebooks.add(notebook_id)
+            
+            # Update master registry
+            registry = self.manager.load_registry(force_reload=True)
+            fp_hash = self.manager._compute_fp_hash()
+            system_name = socket.gethostname()
+            
+            if fp_hash not in registry.get("system_index", {}):
+                registry["system_index"][fp_hash] = system_name
+            
+            # Store path (relative if under notebooks_root)
+            if path.startswith(self.notebooks_root):
+                stored_path = os.path.relpath(path, self.notebooks_root)
             else:
+                stored_path = path
+            
+            if notebook_id not in registry.get("notebooks", {}):
                 registry["notebooks"][notebook_id] = {
-                    "name": name,
-                    "path": rel_path,
-                    "encrypted": False,
-                    "locked": False,
-                    "created": datetime.now().isoformat()
+                    "name": notebook_name,
+                    "folder_name": os.path.basename(path),
+                    "created": datetime.now().isoformat(),
+                    "systems": {}
                 }
-
-            self.save_registry(registry)
-
+            
+            registry["notebooks"][notebook_id]["systems"][fp_hash] = {
+                "path": stored_path,
+                "vault": "default",
+                "entry": entry_uuid,
+                "locked": True if is_encrypted else False,
+                "system_name": system_name
+            }
+            
+            self.manager.save_registry(registry)
+            
             # Add to NotebookManager list
             self.notebooks.append({
                 "id": notebook_id,
-                "name": name,
+                "name": notebook_name,
                 "path": path,
                 "encrypted": is_encrypted,
+                "locked": True if is_encrypted else False,
                 "note_count": 0,
                 "file_count": 0,
                 "sub_count": 0,
@@ -1922,11 +1877,11 @@ class NotebookManager:
 
             # Add to main NoteManager list
             from terminal_notes_core import Notebook
-            main_notebook = Notebook(name, notebook_id=notebook_id)
+            main_notebook = Notebook(notebook_name, notebook_id=notebook_id)
             if is_encrypted and crypto_obj:
                 main_notebook.locked = True
                 main_notebook.custom_path = None
-                main_notebook._crypto = None
+                main_notebook._crypto = crypto_obj
                 self.manager.encrypted_notebooks.add(notebook_id)
             else:
                 main_notebook.locked = False
@@ -1935,7 +1890,7 @@ class NotebookManager:
             self.manager.notebooks.append(main_notebook)
 
             print(f"\n  ✓ Notebook imported successfully!")
-            print(f"   Name: {name}")
+            print(f"   Name: {notebook_name}")
             print(f"   Location: {path}")
             if is_encrypted:
                 print(f"   🔒 Notebook is LOCKED")
@@ -1986,28 +1941,41 @@ class NotebookManager:
             return False
 
     def show_notebook_view(self, notebook):
-        """Show notebook details - ALWAYS get fresh data from registry"""
+        """Show notebook details - ALWAYS get fresh data from master registry"""
         while True:
-            # Refresh notebook data from registry
             notebook_id = notebook["id"]
-            self.load_notebooks()
             
-            fresh_notebook = None
-            for nb in self.notebooks:
-                if nb["id"] == notebook_id:
-                    fresh_notebook = nb
-                    break
+            # ========== GET FRESH DATA FROM MASTER REGISTRY ==========
+            master_registry = self.manager.load_registry(force_reload=True)
+            fp_hash = self.manager._compute_fp_hash()
             
-            if fresh_notebook:
-                notebook = fresh_notebook
+            notebook_data = master_registry.get("notebooks", {}).get(notebook_id, {})
+            system_entry = notebook_data.get("systems", {}).get(fp_hash, {})
+            
+            # Get path from master registry
+            path_from_registry = system_entry.get("path", "")
+            if path_from_registry and not os.path.isabs(path_from_registry):
+                path_from_registry = os.path.join(self.manager.notebooks_root, path_from_registry)
+            
+            # Get lock state from master registry
+            is_locked = system_entry.get("locked", True)
+            is_encrypted = notebook.get('encrypted', False) or bool(system_entry.get("entry"))
+            
+            # Get vault name
+            vault_name = system_entry.get("vault", "default")
+            
+            # Get counts from notebook object (already loaded by main manager)
+            note_count = notebook.get('note_count', 0)
+            file_count = notebook.get('file_count', 0)
+            sub_count = notebook.get('sub_count', 0)
             
             self.clear_screen()
             width, _ = self.get_terminal_size()
             
             # Get display name with lock symbol
             display_name = notebook['name']
-            if notebook.get('encrypted'):
-                if notebook.get('locked', True):
+            if is_encrypted:
+                if is_locked:
                     display_name = f"🔒 {notebook['name']}"
                 else:
                     display_name = f"🔐 {notebook['name']}"
@@ -2015,35 +1983,36 @@ class NotebookManager:
             self.print_header(f"Notebook: {display_name}")
             
             # Type and encryption status
-            if notebook.get('encrypted'):
-                if notebook.get('locked', True):
+            if is_encrypted:
+                if is_locked:
                     print(f"Type: 🔒 Encrypted (locked)")
                 else:
                     print(f"Type: 🔐 Encrypted (unlocked)")
             else:
                 print(f"Type: Unencrypted")
             
-            print(f"Path: {notebook['path']}")
+            # Show path from master registry
+            if path_from_registry and os.path.exists(path_from_registry):
+                print(f"Path: {path_from_registry}")
+            else:
+                print(f"Path: [Not found]")
+            
             print()
             
             git_config = notebook.get("git_config")
             account = notebook.get("account")
             has_remote = git_config and account
             
-            # ========== SURGICAL FIX: Use folder name as repository name ==========
-            # Get the actual folder name from the path
+            # Get folder name for repository display
             folder_name = ""
-            if notebook.get('path') and os.path.exists(notebook['path']):
-                folder_name = os.path.basename(notebook['path'])
-                # Remove .git suffix if present
+            if path_from_registry and os.path.exists(path_from_registry):
+                folder_name = os.path.basename(path_from_registry)
                 if folder_name.endswith('.git'):
                     folder_name = folder_name[:-4]
             
-            # If folder_name is empty, try to construct from name and id
             if not folder_name:
                 clean_name = notebook['name'].replace('🔐 ', '').replace('🔒 ', '')
-                folder_name = f"{clean_name}-{notebook['id']}"
-            # ========== END FIX ==========
+                folder_name = f"{clean_name}-{notebook_id}"
             
             def format_datetime(dt_str):
                 if not dt_str:
@@ -2060,20 +2029,17 @@ class NotebookManager:
                 visibility = git_config.get("visibility", "private")
                 visibility_display = "🔒 PRIVATE" if visibility == "private" else "🔐 PUBLIC"
                 print(f"Account: {account['username']}@{account.get('platform', 'github')}")
-                # ========== SURGICAL FIX: Display folder name, not git_config repo ==========
                 print(f"Repository: {folder_name}")
-                # ========== END FIX ==========
                 print(f"Visibility: {visibility_display}")
                 if git_config.get('last_push'):
                     print(f"Last push: {format_datetime(git_config['last_push'])}")
                 if git_config.get('created'):
                     print(f"Created: {format_datetime(git_config['created'])}")
             
-                path = notebook['path']
-                if path and os.path.exists(os.path.join(path, ".git")):
+                if path_from_registry and os.path.exists(os.path.join(path_from_registry, ".git")):
                     try:
                         cmd = ["git", "log", "-1", "--format=%cd", "--date=format:%b %d, %Y %H:%M"]
-                        result = subprocess.run(cmd, cwd=path, capture_output=True, text=True)
+                        result = subprocess.run(cmd, cwd=path_from_registry, capture_output=True, text=True)
                         if result.returncode == 0 and result.stdout.strip():
                             last_modified = result.stdout.strip()
                             print(f"Last modified: {last_modified}")
@@ -2083,9 +2049,11 @@ class NotebookManager:
                 print("GitHub: Not configured")
             
             print()
-            print(f"Notes: {notebook.get('note_count', 0)}")
-            print(f"Files: {notebook.get('file_count', 0)}")
-            print(f"Subnotebooks: {notebook.get('sub_count', 0)}")
+            print(f"Vault: {vault_name}")
+            print()
+            print(f"Notes: {note_count}")
+            print(f"Files: {file_count}")
+            print(f"Subnotebooks: {sub_count}")
             print()
             
             security_exists = self.has_security_activity(notebook)
@@ -2103,24 +2071,55 @@ class NotebookManager:
             
             self.print_footer("  ".join(options))
             
-            cmd = self.get_input("> ").lower()
+            cmd = self.get_input("> ").strip().lower()
             
+            # Handle single letter commands
             if cmd == "b":
                 break
+            
             elif cmd == "l" and not has_remote:
                 self.configure_notebook(notebook)
+            
             elif cmd == "c":
                 self._show_change_options(notebook, has_remote)
+            
             elif cmd == "v" and has_remote:
                 self.toggle_visibility(notebook)
+            
             elif cmd == "t" and has_remote:
                 self.test_connection(notebook)
+            
             elif cmd == "p" and has_remote:
                 self.push_notebook(notebook)
+            
             elif cmd == "d" and has_remote:
                 self.delete_repo(notebook)
+            
             elif cmd == "a":
                 self.show_security_activity(notebook)
+            
+            # Handle commands with numbers
+            elif len(cmd) > 1 and cmd[0] in ['v', 't', 'p', 'd', 'a', 'c', 'l']:
+                try:
+                    num = int(cmd[1:])
+                    if cmd[0] == 'v' and has_remote:
+                        self.toggle_visibility(notebook)
+                    elif cmd[0] == 't' and has_remote:
+                        self.test_connection(notebook)
+                    elif cmd[0] == 'p' and has_remote:
+                        self.push_notebook(notebook)
+                    elif cmd[0] == 'd' and has_remote:
+                        self.delete_repo(notebook)
+                    elif cmd[0] == 'a':
+                        self.show_security_activity(notebook)
+                    elif cmd[0] == 'c':
+                        self._show_change_options(notebook, has_remote)
+                    elif cmd[0] == 'l' and not has_remote:
+                        self.configure_notebook(notebook)
+                except ValueError:
+                    print(f"Invalid command format. Use {cmd[0]} or {cmd[0]}#")
+                    self.get_input("Press Enter to continue...")
+            
             elif cmd == "q" or cmd == "qy":
                 if cmd == "qy":
                     self.clear_screen()
@@ -2139,7 +2138,10 @@ class NotebookManager:
                         if confirm == "y":
                             self.clear_screen()
                             return "exit_app"
-                    continue
+            
+            else:
+                print(f"Invalid command. Available options: {', '.join(options)}")
+                self.get_input("Press Enter to continue...")
                 
     def show_security_activity(self, notebook):
         """Show security-related commits (password changes) for this notebook"""

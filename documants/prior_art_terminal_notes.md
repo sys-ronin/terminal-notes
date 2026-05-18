@@ -1,115 +1,130 @@
-===============================================================================
-                          PRIOR ART DISCLOSURE
-                      Terminal Notes Integrated System
-                           (COMPREHENSIVE)
-===============================================================================
+# PRIOR ART DISCLOSURE
+## Terminal Notes Integrated System (Comprehensive)
 
-------------------------------------------------------------------------------
-                          DEFENSIVE PUBLICATION
-------------------------------------------------------------------------------
+**Date of publication:** February 2026 (initial), May 2026 (updated)
+**Repository:** [https://github.com/sys-ronin/terminal-notes](https://github.com/sys-ronin/terminal-notes)
+**Status:** Public, irrevocable, timestamped
 
-===============================================================================
-                                SUMMARY
-===============================================================================
+This document establishes prior art for the complete integrated system described herein. All concepts, implementations, combinations, and future adaptations disclosed are now part of the public domain.
 
-Date of publication: February 2026 (initial), April 2026 (updated)
-Repository: https://github.com/sys-ronin/terminal-notes
-Status: Public, irrevocable, timestamped
-
-This document establishes prior art for the complete integrated system described herein.
-All concepts, implementations, combinations, and future adaptations disclosed are now part of the public domain.
-
-No party may patent these concepts. No party may claim exclusive rights.
+**No party may patent these concepts. No party may claim exclusive rights.**
 This is not a request. This is a statement of fact.
 
-===============================================================================
-                            DISCLOSED CONCEPTS
-===============================================================================
+---
 
-------------------------------------------------------------------------------
-1. UUID PERMANENCE (ITEM IDENTITY)
-------------------------------------------------------------------------------
+## Table of Contents
 
-Every item (note, notebook, file, subnotebook) receives a UUID at creation.
-UUID is never changed throughout the item's lifetime. It survives:
+1. UUID Permanence (Item Identity)
+2. Infinite Nested Subnotebooks with Full Content
+3. Notebook Registry & Portability
+4. Notebook Manager with Git Account Integration
+5. Three‑File Atomic Architecture
+6. Custom Encryption Architecture (Zero‑Trust, Portable, Hardware‑Bound)
+7. Zero‑Trust Binary Vault (Session Storage)
+8. Universal JSON Handler with Automatic Crypto
+9. Git as Item‑Level Temporal Database
+10. Git Resurrection Engine
+11. Timeline Engine
+12. Custom Query Parser for Pinpoint Searching
+13. Unified Search Engine
+14. Relative Ancestor Navigation (Fish‑Eye)
+15. Activity View (Temporal Aggregation)
+16. Complete Hierarchy Resurrection
+17. git‑filter‑repo as Embedded Module with Custom Filters
+18. Permanent Erasure with git‑filter‑repo
+19. Crash Recovery with UUID Keying
+20. Configurable Editor System
+21. Data‑as‑UI (Zero Learning Curve)
+22. Terminal User Interface as Integral Component
+23. Cross‑Platform Adaptations (Future Implementations)
+24. Cognitive Alignment (Emergent Property)
+25. Zero Background Processes (Cognitive Efficiency)
+26. Integrated System
+27. **Portable Secure Session Vaults (Custom Locations)**
+28. **Trusted Devices Management**
+29. **Missing Vault Detection and Active Cache Validation**
+30. **Docker / Cloud Ephemeral Fingerprinting**
+31. **O(1) Deterministic UUID Chains and Multiple‑Origin Coordination**
+32. **Eternal License**
+33. Prior Art Assertion
+
+---
+
+### 1. UUID Permanence (Item Identity)
+
+Every item (note, notebook, file, subnotebook) receives a UUID at creation. The UUID never changes throughout the item’s lifetime. It survives:
+
 - Rename operations
 - Move operations between notebooks
 - Deletion and resurrection from history
-- Export and re-import across machines
-- Git commit history (every commit references UUID)
+- Export and re‑import across machines
+- Git commit history (every commit references the UUID)
 - Platform migration (Linux, macOS, Windows)
-- Hard erase (UUID persists in commit history until purged via git-filter-repo)
+- Hard erase (UUID persists in commit history until purged via `git‑filter‑repo`)
 
 UUIDs enable:
 - Item tracking across time
 - Resurrection of deleted items
 - Timeline reconstruction
 - Activity aggregation
-- Cross-notebook reference integrity
+- Cross‑notebook reference integrity
 - Recovery after crashes
 - O(1) dictionary lookups in memory
-- Deterministic navigation through parent-child relationships
+- Deterministic navigation through parent‑child relationships
 
-UUID format: timestamp-based (YYYYMMDDHHMMSS) for simple items, RFC 4122 UUID4 for complex.
+UUID format: timestamp‑based (`YYYYMMDDHHMMSS`) for simple items, RFC 4122 UUID4 for complex.
 All operations use UUID as primary key, never name or path.
 
-------------------------------------------------------------------------------
-2. INFINITE NESTED SUBNOTEBOOKS WITH FULL CONTENT
-------------------------------------------------------------------------------
+---
 
-Notebooks can contain unlimited nested subnotebooks, forming arbitrary depth hierarchies.
-Each subnotebook is a full notebook object with its own UUID, name, parent ID reference,
-notes collection, and subnotebooks collection (recursive).
+### 2. Infinite Nested Subnotebooks with Full Content
+
+Notebooks can contain unlimited nested subnotebooks, forming arbitrary depth hierarchies. Each subnotebook is a full notebook object with its own UUID, name, parent ID reference, notes collection, and subnotebooks collection (recursive).
 
 Content inheritance:
-- Notes in subnotebooks are stored in parent's notes.json/files.json
-- Full content of entire hierarchy is accessible from root
-- No depth limit - recursion handles any nesting level
-- Search traverses entire tree automatically
-- Activity view aggregates changes across entire hierarchy
+- Notes in subnotebooks are stored in the parent’s `notes.json` / `files.json`
+- Full content of entire hierarchy is accessible from the root
+- No depth limit – recursion handles any nesting level
+- Search traverses the entire tree automatically
+- Activity view aggregates changes across the whole hierarchy
 
-The tree structure enables project organization, hierarchical categorization,
-unlimited depth without performance degradation, independent versioning,
-and selective restoration of branches.
+The tree structure enables project organisation, hierarchical categorisation, unlimited depth without performance degradation, independent versioning, and selective restoration of branches.
 
-------------------------------------------------------------------------------
-3. NOTEBOOK REGISTRY & PORTABILITY
-------------------------------------------------------------------------------
+---
 
-Central registry (notebooks_registry.json) maps notebook UUID → filesystem path.
-Registry entries for encrypted notebooks are themselves encrypted with the notebook's key.
+### 3. Notebook Registry & Portability
+
+A central registry (`notebooks_registry.json`) maps notebook UUID → filesystem path and, for encrypted notebooks, to vault and entry identifiers. Registry entries for encrypted notebooks are encrypted with the notebook’s own key.
 
 Notebooks can live in any location:
-- Default directory (notebooks_root/)
-- Custom user-specified paths
-- External drives, network shares, Docker volumes, cloud-synced folders
+- Default directory (`notebooks_root/`)
+- Custom user‑specified paths
+- External drives, network shares, Docker volumes, cloud‑synced folders
 - USB drives (portable)
 
 Path handling:
-- Paths stored relative to notebooks_root when possible
+- Paths stored relative to `notebooks_root` when possible
 - Absolute paths preserved for external locations
-- Cross-platform normalization prevents duplicate detection failures
+- Cross‑platform normalisation prevents duplicate detection failures
 - Missing paths detected and flagged during load
 
-Custom paths persist in structure.json within each notebook.
-Notebooks are self-contained and can be moved manually.
-Re-import detects existing paths and prevents duplicates.
+Custom paths persist in `structure.json` within each notebook. Notebooks are self‑contained and can be moved manually. Re‑import detects existing paths and prevents duplicates.
 
-------------------------------------------------------------------------------
-4. NOTEBOOK MANAGER WITH GIT ACCOUNT INTEGRATION
-------------------------------------------------------------------------------
+---
 
-Centralized manager for all notebooks with Git account integration:
+### 4. Notebook Manager with Git Account Integration
 
-Account system:
-- Encrypted storage of Git credentials using zero-trust binary vault
-- Supports multiple platforms: GitHub, GitLab, Bitbucket, self-hosted Gitea
-- Account ID generated from username@host
-- Per-notebook repository configuration
+A centralised manager for all notebooks provides Git account integration:
+
+**Account system**
+- Encrypted storage of Git credentials using a zero‑trust binary vault
+- Supports GitHub, GitLab, Bitbucket, and self‑hosted Gitea
+- Account ID generated from `username@host`
+- Per‑notebook repository configuration
 - Multiple entries per account (one per trusted machine)
 
-Repository management:
-- Link notebook to Git repository
+**Repository management**
+- Link a notebook to a Git repository
 - Create repository on first push
 - Push with authentication via stored token
 - Pull updates for listed notebooks
@@ -118,54 +133,38 @@ Repository management:
 - Test connection with timeout and retry
 - Change remote account and repository
 
-Parallel operations:
-- Multi-threaded repository scanning with connection pooling
+**Parallel operations**
+- Multi‑threaded repository scanning with connection pooling
 - DNS caching for performance
 - Timeout handling with retry logic
 - Progress indicators for batch operations
 
-Notebook discovery:
+**Notebook discovery**
 - Scan accounts for Terminal Notes repositories
 - Detect encryption status remotely
-- Parse structure.json to extract metadata without cloning
+- Parse `structure.json` to extract metadata without cloning
 - Show counts (notes, files, subs) remotely
 - Link existing notebooks to accounts
 
 This creates a complete notebook lifecycle management system integrated with Git hosting platforms.
 
-------------------------------------------------------------------------------
-5. THREE-FILE ATOMIC ARCHITECTURE
-------------------------------------------------------------------------------
+---
 
-Each notebook is a self-contained directory with exactly three JSON files:
+### 5. Three‑File Atomic Architecture
 
-structure.json
-    Contains hierarchy only. No content.
-    Stores: UUIDs, names, parent-child relationships, custom_path.
-    Enables tree navigation without loading content.
-    Small size allows fast loading even with thousands of notes.
+Each notebook is a self‑contained directory with exactly three JSON files:
 
-notes.json
-    UUID → content mapping for regular text notes.
-    Keys are UUIDs, values are plain text content.
-    Human-readable, Git-diffable, searchable.
+- **`structure.json`** – hierarchy only (UUIDs, names, parent‑child relationships, custom_path). Enables tree navigation without loading content. Small size allows fast loading even with thousands of notes.
+- **`notes.json`** – UUID → content mapping for regular text notes. Human‑readable, Git‑diffable, searchable.
+- **`files.json`** – UUID → content mapping for file notes (80+ extensions). Extensions stored in `structure.json` for syntax highlighting.
 
-files.json
-    UUID → content mapping for file notes (80+ extensions).
-    Keys are UUIDs, values are file content.
-    Extensions stored in structure.json for syntax highlighting.
-    Enables extension-based search.
+**Write operations are atomic:**
+1. Write to `.tmp` file
+2. `fsync()` to force disk flush
+3. `rename()` atomic operation
+4. Original file replaced only on success
 
-Write operations are atomic:
-    1. Write to .tmp file
-    2. fsync() to force disk flush
-    3. rename() atomic operation
-    4. Original file replaced only on success
-
-Crash recovery is inherent:
-    Partial writes affect only .tmp files
-    .tmp files ignored on next startup
-    No corruption possible
+**Crash recovery is inherent:** partial writes affect only `.tmp` files, which are ignored on next startup. No corruption possible.
 
 This separation enables:
 - Resurrection (reconstruct items from history)
@@ -174,977 +173,601 @@ This separation enables:
 - Git efficiency (small deltas, meaningful diffs)
 - Memory efficiency (load structure without content)
 
-------------------------------------------------------------------------------
-6. CUSTOM ENCRYPTION ARCHITECTURE (ZERO-TRUST, PORTABLE, HARDWARE-BOUND)
-------------------------------------------------------------------------------
+---
+
+### 6. Custom Encryption Architecture (Zero‑Trust, Portable, Hardware‑Bound)
 
 A novel encryption architecture that integrates seamlessly with all operations:
 
-Key derivation (one-way, irreversible):
-    Kp = SHA256(password + b':' + folder_name)     # password key
-    Ks = SHA256(phrase + b':' + folder_name)       # phrase key (never changes)
-    Kc = SHA256(Kp + Ks)                           # combined key
-
-    Folder name is PART OF THE KEY. Renaming folder = permanent data loss.
-    This creates a physical binding between key and storage location.
-
-Three verification files per notebook:
-    .tn_test        → "VERIFICATION" encrypted with Ks (phrase key)
-    .tn_recovery    → password_key (Kp) encrypted with Ks
-    .tn_password    → combined_key (Kc) encrypted with Kc (self-referential)
-
-Encryption format:
-    Magic header: b"TN_ENC" (6 bytes) prepended to all encrypted data
-    Nonce: 12 random bytes per encryption
-    Ciphertext: AES-GCM encrypted data with authentication tag
-
-File structure:
-    structure.json → fully encrypted (binary)
-    notes.json → fully encrypted (binary)
-    files.json → fully encrypted (binary)
-    .tn_test → encrypted verification marker
-
-Registry encryption:
-    Notebook entries in registry are encrypted with notebook's key
-    registry["notebooks"][notebook.id] = encrypted_hex_string
-    Prevents metadata leakage about encrypted notebooks
-
-Lock/Unlock mechanism (explicit memory manager):
-    Locked: custom_path = None, session_key removed, keys cleared from RAM, shows 🔒
-    Unlocked: custom_path restored, session_key present, shows 🔐
-    Content inaccessible when locked
-    Structure metadata (counts) still visible when locked
-
-Autolock flag (per‑notebook):
-    Stored in registry entry as boolean `autolock`.
-    When enabled, the notebook is forced into locked state on every application startup,
-    regardless of its previous lock state. Encryption keys are cleared from memory.
-    User can toggle via change options menu.
-    Useful for shared computers or sensitive notebooks.
-
-Password change (instant, no re-encryption):
-    Only .tn_recovery and .tn_password are updated
-    Ks (phrase key) never changes
-    Notebook content remains encrypted with Ks
-
-Cross-machine synchronization:
-    Each trusted machine adds its own entry in session.vault
-    Entry encrypted with SHA256(timestamp + machine fingerprint)
-    Fingerprint never stored - derived at runtime
-    New machine requires phrase once, then password only
-    Old entries remain for other machines
-
-------------------------------------------------------------------------------
-7. ZERO-TRUST BINARY VAULT (SESSION STORAGE)
-------------------------------------------------------------------------------
-
-Keys are stored in a portable, tamper-evident binary vault (session.vault):
-
-Vault format (version 4):
-    [4 bytes] version
-    For each notebook:
-        [4 bytes] id_length
-        [variable] notebook_id (UTF-8, plain for lookup)
-        [4 bytes] num_entries
-        For each entry (one per trusted machine):
-            [8 bytes] timestamp
-            [12 bytes] nonce
-            [4 bytes] encrypted_keys_length
-            [variable] encrypted_keys (AES-GCM)
-            [1 byte] active_flag (O(1) lookup)
-            [8 bytes] created_timestamp
-
-Key derivation for each entry:
-    encryption_key = SHA256(timestamp + current_fingerprint)
-    Fingerprint is derived from hardware at runtime, NEVER stored
-
-Active flag:
-    Indicates which entry belongs to current machine
-    Enables O(1) lookup without trial decryption
-    Falls back to trial decryption if flag is wrong
-
-System fingerprint generation (runtime only, never stored):
-    - Linux: /etc/machine-id, product_uuid, CPU info
-    - macOS: IOPlatformUUID, hardware UUID, serial number
-    - Windows: MachineGUID, ComputerName, SID
-    - Fallback: hostname, username, platform info, file paths
-
-Properties:
-    - No outer encryption (vault is open binary)
-    - No fingerprint stored anywhere
-    - Tamper-evident (any change breaks decryption)
-    - Portable (copy vault between machines)
-    - Multi-machine (one entry per trusted machine)
-    - Zero-trust (vault contains no machine identifiers)
-
-------------------------------------------------------------------------------
-8. UNIVERSAL JSON HANDLER WITH AUTOMATIC CRYPTO
-------------------------------------------------------------------------------
-
-Single unified handler for all JSON operations across entire application:
-
-read_json(filepath, crypto=None)
-    Reads ANY JSON file from disk
-    Automatically decrypts if crypto provided
-    Returns parsed dict or None on failure
-
-write_json(filepath, data, crypto=None)
-    Writes ANY JSON file with atomic pattern
-    Encrypts automatically if crypto provided
-    Guarantees no partial writes
-
-read_bytes(raw_bytes, crypto=None)
-    Reads JSON from bytes (git show output)
-    Decrypts if crypto provided
-
-_parse_json(raw, crypto)
-    SINGLE POINT where decryption happens
-    Every JSON read passes through here
-    Try decryption first, fallback to plain text
-
-All operations (load, save, merge, filter) use these handlers.
-Encryption is invisible. Callers just pass crypto when available.
-The entire application is encryption-aware without knowing it.
-
-------------------------------------------------------------------------------
-9. GIT AS ITEM-LEVEL TEMPORAL DATABASE
-------------------------------------------------------------------------------
-
-Every state change is committed to Git automatically.
-Git repository lives inside each root notebook directory.
-
-Each commit message follows strict format:
-
-    type: ACTION CONTENT_TYPE: title | context
-
-    Metadata description (change statistics, etc.)
-
-    Metadata: uuid:ITEM_UUID | parent:PARENT_UUID | root:ROOT_UUID
-
-Actions:
-- CREATED    → item creation (with total character count)
-- UPDATED    → content edit (with added/removed character counts +X/-Y)
-- EDITED     → synonym for UPDATED
-- RENAMED    → title change (shows old → new)
-- DELETED    → removal from current view
-- RESTORED   → resurrection from history
-- ERASED     → permanent removal (tombstone commit)
-
-Content types:
-- NOTE, FILE, NOTEBOOK, SUBNOTEBOOK
-
-Complete item history is queryable via:
-
-    git log --grep uuid:<UUID> --all
-
-Item-level searching:
-    Find all commits affecting a specific UUID
-    Track item across renames, moves, deletions
-    Reconstruct state at any point in time
-    Aggregate activity across all items
-    Search deleted items (deleted*)
-    Search renamed items (renamed*)
-    Search restored items (restored*)
-    Search erased items (erased*)
-
-This enables Git to function as a true item-level temporal database,
-not just a file-level version control system.
-
-------------------------------------------------------------------------------
-10. GIT RESURRECTION ENGINE
-------------------------------------------------------------------------------
-
-Centralized engine for all historical item operations:
-
-find_deleted_items(query)
-    Finds all deleted items matching query
-    Uses git log --grep "^type: DELETED"
-    Extracts UUID from commit metadata
-    Reconstructs item from commit BEFORE deletion
-
-find_renamed_items(query)
-    Finds all renamed items matching query
-    Uses git log --grep "^type: RENAMED"
-    Extracts old and new names from commit
-    Reconstructs item from commit BEFORE rename
-
-find_restored_items(query)
-    Finds all restored items matching query
-    Uses git log --grep "^type: RESTORED"
-    Returns reconstructed items from restore commits
-
-find_erased_items(query)
-    Finds all permanently erased items (tombstones)
-    Uses git log --grep "^type: ERASED"
-    Returns minimal metadata (title, UUID, parent)
-    Content unavailable (permanently removed)
-
-_create_temp_json_for_item(uuid, commit_hash)
-    Core reconstruction function
-    Extracts structure.json at specific commit
-    Finds item by UUID in historical structure
-    Creates minimal hierarchy containing just that item
-    Extracts content from notes.json/files.json
-    Returns dict with temp_dir containing reconstructed files
-
-display_resurrected_item(result_data, ui)
-    Unified display for any resurrected item
-    Detects type (note/file/subnotebook)
-    Uses appropriate viewer with full pagination
-    Includes [R]estore button
-
-_restore_item(result_data, ui)
-    Restores item to original location
-    Finds parent UUID from commit metadata
-    Merges content into live notes.json/files.json
-    Updates structure.json with item
-    Commits restoration with metadata
-    Refreshes search results automatically
-
-The resurrection engine is the single source of truth for all historical operations.
-Timeline, activity, search all delegate to it.
-
-------------------------------------------------------------------------------
-11. TIMELINE ENGINE
-------------------------------------------------------------------------------
-
-Specialized engine for item version history:
-
-get_item_timeline(uuid, notebook_id, crypto)
-    Gets all commits mentioning specific UUID
-    Returns list of version metadata (commit_hash, date, message)
-
-create_version_at_commit(uuid, commit_hash, crypto)
-    Reconstructs item at specific commit
-    Delegates to resurrection engine
-    Returns full version data with temp_dir
-
-Timeline display:
-    Shows versions with dates and actions
-    CREATED: shows total characters
-    UPDATED: shows change stats (+X/-Y)
-    RENAMED: shows old → new
-    DELETED/ERASED: just action
-
-Viewing a version:
-    Calls create_version_at_commit
-    Displays using resurrection engine's viewers
-    Read-only mode, export available for files
-
-Timeline is separate from search and activity:
-    Search: finds items across time
-    Activity: shows recent changes across items
-    Timeline: shows one item's complete history
-    All use same underlying git database
-
-------------------------------------------------------------------------------
-12. CUSTOM QUERY PARSER FOR PINPOINT SEARCHING
-------------------------------------------------------------------------------
-
-Order-independent token recognition with single positional constraint:
-
-Query format (any order except in*):
-    s [action*] [type*] [date*] [time*] [g*] [text] [in* notebook]
-
-Action filters (wildcard required):
-    created*, deleted*, edited*, updated*, renamed*, restored*, erased*
-
-Type filters (wildcard required):
-    note*, file*, sub*, notebook*
-
-Date filter (wildcard required):
-    date* DD-MM-YYYY [DD-MM-YYYY]  → single day or range
-
-Time shortcuts (wildcard required):
-    today*, yesterday*, thisweek*, lastweek*
-
-Scope (MUST be at end):
-    in* notebook_name  → search in notebook and all descendants
-
-Global override (anywhere):
-    g*  → forces global search, ignores context
-
-Text query:
-    Remaining words → substring search across titles/content, case-insensitive, AND logic
-
-Parser behavior:
-    - Filters can appear in ANY sequence (except in* at end)
-    - Recognized tokens removed from query
-    - Remaining tokens become text search
-    - Single pass, no lookahead except date ranges
-
-Intent-based display:
-    With action wildcard → NO action prefix in results
-    Without action wildcard → SHOW action prefix in results
+**Key derivation (one‑way, irreversible):**
+```text
+Kp = SHA256(password + b':' + folder_name)   # password key
+Ks = SHA256(phrase + b':' + folder_name)     # phrase key (never changes)
+Kc = SHA256(Kp + Ks)                         # combined key
+```
+The folder name is part of the key. Renaming the folder permanently locks the data, creating a physical binding between key and storage location.
+
+**Three verification files per notebook:**
+- `.tn_test` – `"VERIFICATION"` encrypted with Ks
+- `.tn_recovery` – `Kp` encrypted with Ks
+- `.tn_password` – `Kc` encrypted with Kc (self‑referential)
+
+**Encryption format:**
+- Magic header: `b"TN_ENC"` (6 bytes) prepended to all encrypted data
+- Nonce: 12 random bytes per encryption
+- Ciphertext: AES‑GCM encrypted data with authentication tag
+
+**File structure:**
+- `structure.json`, `notes.json`, `files.json` → fully encrypted (binary)
+- `.tn_test` → encrypted verification marker
+
+**Registry encryption:** Notebook entries in the master registry are encrypted with the notebook’s key, preventing metadata leakage about encrypted notebooks.
+
+**Lock/Unlock as explicit memory manager:**
+- **Locked:** `custom_path = None`, session key removed, keys cleared from RAM, shows 🔒
+- **Unlocked:** `custom_path` restored, session key present, shows 🔐
+
+**Autolock flag (per‑notebook):** stored in the registry entry as `autolock`. When enabled, the notebook is forced into locked state on every application startup, regardless of its previous lock state. Useful for shared computers or sensitive notebooks.
+
+**Password change (instant, no re‑encryption):** only `.tn_recovery` and `.tn_password` are updated; Ks never changes; notebook content remains encrypted with Ks.
+
+**Cross‑machine synchronisation:** each trusted machine adds its own entry in the session vault. The entry is encrypted with `SHA256(timestamp + machine fingerprint)`. The fingerprint is never stored – derived at runtime. A new machine requires the recovery phrase once, then only the password. Old entries remain for other machines.
+
+---
+
+### 7. Zero‑Trust Binary Vault (Session Storage)
+
+Keys are stored in a portable, tamper‑evident binary vault (`session.vault`). The vault format (version 5 or later) stores:
+
+- Version number (4 bytes)
+- For each notebook: `id_length`, `notebook_id`, `num_entries`
+- For each entry: `timestamp`, `nonce`, `encrypted_keys_length`, `encrypted_keys`, `active_flag`, `created_timestamp`, `system_name` (hostname)
+
+**Key derivation for each entry:**
+`encryption_key = SHA256(timestamp + current_fingerprint)`
+
+The fingerprint is derived from hardware at runtime and **never stored**.
+
+**Active flag** enables O(1) lookup without trial decryption; falls back to trial decryption if the flag is incorrect.
+
+**System fingerprint generation (runtime only, never stored):**
+- Linux: `/etc/machine-id`, product UUID, CPU info
+- macOS: IOPlatformUUID, hardware UUID, serial number
+- Windows: MachineGUID, ComputerName, SID
+- Fallback: hostname, username, platform info, file paths
+
+**Properties:** no outer encryption, no stored fingerprint, tamper‑evident, portable, multi‑machine, zero‑trust.
+
+---
+
+### 8. Universal JSON Handler with Automatic Crypto
+
+Single unified handler for all JSON operations:
+
+- `read_json(filepath, crypto)` – reads any JSON file, automatically decrypts if crypto provided, returns parsed dict or `None`
+- `write_json(filepath, data, crypto)` – writes any JSON file with atomic pattern, encrypts automatically if crypto provided, guarantees no partial writes
+- `read_bytes(raw_bytes, crypto)` – reads JSON from bytes (e.g., `git show` output), decrypts if crypto provided
+- `_parse_json(raw, crypto)` – the single point where decryption happens; tries decryption first, falls back to plain text
+
+All operations (load, save, merge, filter) use these handlers. Encryption is invisible – callers simply pass a `crypto` object when available. The entire application is encryption‑aware without being aware of the encryption details.
+
+---
+
+### 9. Git as Item‑Level Temporal Database
+
+Every state change is committed to Git automatically. The Git repository lives inside each root notebook directory.
+
+Each commit message follows a strict format:
+
+```
+type: ACTION CONTENT_TYPE: title | context
+
+Metadata description (change statistics, etc.)
+
+Metadata: uuid:ITEM_UUID | parent:PARENT_UUID | root:ROOT_UUID
+```
+
+**Actions:** `CREATED`, `UPDATED`, `EDITED`, `RENAMED`, `DELETED`, `RESTORED`, `ERASED`
+**Content types:** `NOTE`, `FILE`, `NOTEBOOK`, `SUBNOTEBOOK`
+
+Complete item history is queryable with `git log --grep uuid:<UUID> --all`.
+Item‑level searching: find all commits affecting a specific UUID; track item across renames, moves, deletions; reconstruct state at any point; aggregate activity; search deleted/renamed/restored/erased items.
+
+This enables Git to function as a true item‑level temporal database, not just a file‑level version control system.
+
+---
+
+### 10. Git Resurrection Engine
+
+Centralised engine for all historical item operations:
+
+- `find_deleted_items(query)` – uses `git log --grep "^type: DELETED"`, extracts UUID, reconstructs item from commit before deletion
+- `find_renamed_items(query)` – uses `git log --grep "^type: RENAMED"`, reconstructs from commit before rename
+- `find_restored_items(query)` – uses `git log --grep "^type: RESTORED"`, returns reconstructed items
+- `find_erased_items(query)` – uses `git log --grep "^type: ERASED"`, returns minimal metadata (tombstone)
+- `_create_temp_json_for_item(uuid, commit_hash)` – core reconstruction; extracts `structure.json`, `notes.json`, `files.json` from a specific commit, finds item by UUID, creates a minimal temporary directory with the item’s data
+- `display_resurrected_item(result_data, ui)` – unified display for any resurrected item
+- `_restore_item(result_data, ui)` – restores item to original location, merges content, updates structure, commits as `RESTORED`
+
+The resurrection engine is the single source of truth for all historical operations. Timeline, activity, and search all delegate to it.
+
+---
+
+### 11. Timeline Engine
+
+Specialised engine for item version history:
+
+- `get_item_timeline(uuid, notebook_id, crypto)` – gets all commits mentioning a UUID, returns metadata (commit_hash, date, message)
+- `create_version_at_commit(uuid, commit_hash, crypto)` – reconstructs item at a specific commit, delegates to resurrection engine
+
+**Timeline display:** shows versions with dates and actions (CREATED with total characters, UPDATED with change stats, RENAMED with old‑new, DELETED/ERASED as action only). Viewing a version calls `create_version_at_commit` and displays using the resurrection engine’s viewers (read‑only, export available for files).
+
+Timeline is separate from search and activity: search finds items across time, activity shows recent changes across items, timeline shows one item’s complete history – all use the same underlying Git database.
+
+---
+
+### 12. Custom Query Parser for Pinpoint Searching
+
+Order‑independent token recognition with a single positional constraint (the `in*` token must be last). The query format:
+
+```
+s [action*] [type*] [date*] [time*] [g*] [text] [in* notebook]
+```
+
+**Action filters (wildcard required):** `created*`, `deleted*`, `edited*`, `updated*`, `renamed*`, `restored*`, `erased*`
+**Type filters (wildcard required):** `note*`, `file*`, `sub*`, `notebook*`
+**Date filter (wildcard required):** `date* DD-MM-YYYY [DD-MM-YYYY]`
+**Time shortcuts:** `today*`, `yesterday*`, `thisweek*`, `lastweek*`
+**Scope (must be at end):** `in* notebook_name`
+**Global override (anywhere):** `g*`
+**Text query:** remaining words → substring search, case‑insensitive, AND logic
+
+**Parser behaviour:** filters can appear in any sequence (except `in*` at end); recognised tokens are removed; remaining tokens become text search; single pass, no lookahead except date ranges.
+
+**Intent‑based display:** with action wildcard → no action prefix in results; without action wildcard → action prefix is shown.
 
 Examples:
-    s created* file* meeting in* work          → created files with "meeting" in work
-    s meeting file* created* in* work          → same result (order independent)
-    s deleted* yesterday* report               → items deleted yesterday with "report"
-    s g* config in* work                       → global search for "config" (ignores work)
-    s date* 15-03-2026 20-03-2026 python       → items with "python" in date range
-    s thisweek* important                      → items from this week with "important"
-    s renamed*                                 → find all renamed items
-    s erased*                                  → find all permanently erased items
+- `s created* file* meeting in* work`
+- `s meeting file* created* in* work` (same result)
+- `s deleted* yesterday* report`
+- `s g* config in* work`
+- `s date* 15-03-2026 20-03-2026 python`
+- `s thisweek* important`
+- `s renamed*`, `s erased*`
 
-This enables precise, natural language-like queries without complex syntax.
+This enables precise, natural language‑like queries without complex syntax.
 
-------------------------------------------------------------------------------
-13. UNIFIED SEARCH ENGINE
-------------------------------------------------------------------------------
+---
 
-Single search interface finds all items regardless of state.
+### 13. Unified Search Engine
 
-Search processor:
-    Resolves target notebooks (context, in* scope, or all)
-    Parses query using custom query parser
-    Collects current items via simple_search (title/content)
-    Collects historical items via resurrection engine for ALL action types
-    Deduplicates by UUID
-    Applies type/action/date filters
-    Sorts by date (newest first)
-    Limits to 50 results
+A single search interface finds all items regardless of state (current, deleted, renamed, restored, erased).
 
-Intent-based display:
-    With action wildcard (created*): NO action prefix
-        "file.txt [work]"
-    Without action wildcard: SHOW action prefix
-        "created file: file.txt [work]"
-        "updated note: notes.txt (+15/-23) [work]"
-        "deleted note: old.txt [work]"
-        "renamed note: todo → tasks [work]"
+**Search processor:**
+1. Resolves target notebooks (context, `in*` scope, or all)
+2. Parses the query using the custom query parser
+3. Collects current items via simple search (title/content)
+4. Collects historical items via the resurrection engine for all action types
+5. Deduplicates by UUID
+6. Applies type/action/date filters
+7. Sorts by date (newest first)
+8. Limits to 50 results
 
-Result formatting:
-    Current notes/files: show type, title, location
-    Current notebooks: show name, counts (n/f/s), lock status
-    Historical items: show action, title, original location
-    Renamed items: show old → new
-    All items show location in brackets using smart path (relative to context)
+**Intent‑based display:**
+- With action wildcard → no action prefix (e.g., `"file.txt [work]"`)
+- Without action wildcard → action prefix shown (e.g., `"created file: file.txt [work]"`, `"updated note: notes.txt (+15/-23) [work]"`, `"deleted note: old.txt [work]"`, `"renamed note: todo → tasks [work]"`)
 
-This creates a search experience that understands intent,
-shows appropriate context, never hides history, and adapts to the user.
+**Result formatting:** current notes/files show type, title, location; current notebooks show name, counts (n/f/s), lock status; historical items show action, title, original location; renamed items show old → new; all items show location in brackets using a smart path (relative to context).
 
-------------------------------------------------------------------------------
-14. RELATIVE ANCESTOR NAVIGATION (FISH-EYE)
-------------------------------------------------------------------------------
+This creates a search experience that understands intent, shows appropriate context, never hides history, and adapts to the user.
+
+---
+
+### 14. Relative Ancestor Navigation (Fish‑Eye)
 
 Navigation is based on relative position, not absolute paths.
 
-Navigation stack (single unified stack):
-    Simple list of {'screen': str, 'id': str, 'page': int}
-    Push, pop, replace_page, clear operations
-    No forward button - never needed
+**Navigation stack:** a single unified list of `{'screen': str, 'id': str, 'page': int}`. Push, pop, replace_page, clear operations. No forward button – it is never needed.
 
-Jump history:
-    Save current position before jumping
-    Maximum 20 entries (FIFO)
-    jb command returns to previous position (temporal navigation)
+**Jump history:** saves the current position before jumping; maximum 20 entries (FIFO); `jb` command returns to the previous position (temporal navigation).
 
-Fish-eye path display:
-    Full hierarchy truncated to terminal width
-    Algorithm maintains 4-7 visible segments (Miller's Law)
-    Left ellipsis (...) for truncated ancestors
-    Right ellipsis for truncated descendants
-    Result: ...[2]LEVEL3/[3]LEVEL4/[4]LEVEL5/[5]LEVEL6/
+**Fish‑eye path display:** the full hierarchy is truncated to fit the terminal width. An algorithm maintains 4–7 visible segments (Miller’s Law). Left ellipsis (`...`) for truncated ancestors, right ellipsis for truncated descendants. Example: `...[2]LEVEL3/[3]LEVEL4/[4]LEVEL5/[5]LEVEL6/`
 
-Number mapping:
-    Each visible segment gets relative number
-    Numbers reset per screen, independent of absolute depth
+**Number mapping:** each visible segment gets a relative number; numbers reset per screen, independent of absolute depth.
 
-Jump command: j<number>
-    Looks up UUID by relative number
-    If target in current stack: truncate stack
-    If target not in stack: rebuild full path by walking parent chain
-    Jump history saved automatically
-    O(1) lookup, O(d) path reconstruction where d ≤ 10
+**Jump command `j<number>`:** looks up a notebook by its relative number; if the target is in the current stack, the stack is truncated; otherwise, the system rebuilds the full path by walking the parent chain. Jump history is saved automatically. O(1) lookup, O(d) path reconstruction where `d ≤ 10`.
 
-Back command: b
-    Pops the navigation stack
-    Returns to exact previous state (same screen, same notebook, same page)
+**Back command `b`:** pops the navigation stack and returns to the exact previous state (same screen, same notebook, same page).
 
-This enables navigation by position, constant cognitive load,
-muscle memory development, no path memorization required,
-and no forward button because forward is never needed.
+This enables navigation by position, constant cognitive load, muscle memory development, no path memorisation required, and no forward button because forward is never needed.
 
-------------------------------------------------------------------------------
-15. ACTIVITY VIEW (TEMPORAL AGGREGATION)
-------------------------------------------------------------------------------
+---
+
+### 15. Activity View (Temporal Aggregation)
 
 Activity view shows changes across time with hierarchical context.
 
-Collection:
-    For notebook mode: collects all UUIDs in hierarchy (notebook + all descendants)
-    Uses git log --grep with UUID pattern (OR of all UUIDs)
-    Also fetches DELETED commits that might lack UUID
-    Results limited to 50, sorted newest first
+**Collection:** for a notebook, collects all UUIDs in its hierarchy (notebook + all descendants). Uses `git log --grep` with a UUID pattern (OR of all UUIDs). Also fetches `DELETED` commits that might lack a UUID. Results limited to 50, sorted newest first.
 
-Hierarchical path calculation:
-    Determines where item sits relative to viewing notebook
-    Shows relative path from viewing point
-    Examples (viewing notebook "work"):
-        Item in "work/notes" → "notes"
-        Item in "work/projects/client/docs" → ".../projects/client/docs"
-        Item in "work" itself → "work"
+**Hierarchical path calculation:** determines where an item sits relative to the viewing notebook and shows a relative path. Examples (viewing notebook “work”):
+- Item in `work/notes` → `notes`
+- Item in `work/projects/client/docs` → `.../projects/client/docs`
+- Item in `work` itself → `work`
 
-Display format:
-    [1] created note: meeting-notes (+245) [work/notes]
-    [2] updated file: config.py (+15/-23) [work/projects]
-    [3] renamed note: todo → tasks [work]
-    [4] deleted sub: old-project [.../archived]
+**Display format:** `[1] created note: meeting-notes (+245) [work/notes]`, `[2] updated file: config.py (+15/-23) [work/projects]`, `[3] renamed note: todo → tasks [work]`, `[4] deleted sub: old-project [.../archived]`
 
-Security activity view (password change history):
-    Specialized subset of activity view showing only SECURITY commits.
-    Queries git log with --grep "SECURITY:" and --grep "root: {uuid}".
-    Displays entries as: date | method (old_password/recovery_phrase) | machine (hostname).
-    Button appears progressively only after first password change.
-    Uses same pagination and navigation as main activity view.
+**Security activity view (password change history):** a specialised subset showing only `SECURITY` commits. Queries `git log` with `--grep "SECURITY:"` and `--grep "root: {uuid}"`. Displays entries as `date | method (old_password/recovery_phrase) | machine (hostname)`. The button appears progressively only after the first password change.
 
-Character stats:
-    CREATED: total characters
-    UPDATED: added/removed characters (+X/-Y)
-    RENAMED: shows old → new
-    DELETED/ERASED: no stats
+**Character stats:** `CREATED` – total characters; `UPDATED` – added/removed characters (`+X/-Y`); `RENAMED` – shows old → new; `DELETED/ERASED` – no stats.
 
-Activity is history made visible — not a log, but a narrative.
+Activity is history made visible – not a log, but a narrative.
 
-------------------------------------------------------------------------------
-16. COMPLETE HIERARCHY RESURRECTION
-------------------------------------------------------------------------------
+---
+
+### 16. Complete Hierarchy Resurrection
 
 Any item, at any point in its history, can be resurrected.
 
-Resurrection process:
-    1. User finds item via search (deleted* filter) or activity view
-    2. Views item (shows historical state)
-    3. Presses [R]estore
+**Resurrection process:**
+1. User finds the item via search (e.g., `deleted*` filter) or activity view
+2. Views the item (showing its historical state)
+3. Presses `[R]estore`
 
-Restoration logic:
-    Extracts parent UUID from commit metadata
-    If parent exists: restore to original location
-    If parent missing: prompt for destination
-    Uses resurrection engine's _restore_item
+**Restoration logic:** extracts the parent UUID from the commit metadata. If the parent exists, restores to the original location; if the parent is missing, prompts for a destination. Uses the resurrection engine’s `_restore_item`.
 
-For notes/files:
-    Content merged into live notes.json/files.json (UUID-keyed)
-    Structure.json updated to include item in parent's notes[]
-    Git commit: "RESTORED NOTE: title | to location"
+**For notes/files:** content is merged into live `notes.json` / `files.json` (UUID‑keyed); `structure.json` is updated to include the item in the parent’s notes list; Git commit with `RESTORED` message.
 
-For subnotebooks:
-    Recursively collects all UUIDs in hierarchy
-    Merges ALL content (all notes and files) into live files
-    Updates structure.json with complete hierarchy
-    Git commit: "RESTORED SUBNOTEBOOK: name | to location (X notes, Y subs)"
+**For subnotebooks:** recursively collects all UUIDs in the hierarchy; merges **all** content (all notes and files) into the live files; updates `structure.json` with the complete hierarchy; Git commit summarising the restoration (e.g., `"RESTORED SUBNOTEBOOK: name | to location (X notes, Y subs)"`).
 
-Safety:
-    Original location preferred (maintains hierarchy)
-    Duplicate detection prevents conflicts
-    UUID unchanged (temporal continuity preserved)
-    Content merged, not overwritten
+**Safety:** original location preferred; duplicate detection prevents conflicts; UUID unchanged (temporal continuity preserved); content merged, not overwritten.
 
-Restoration works for deleted notes/files, deleted subnotebooks (with all contents),
-renamed items, and items from any point in timeline.
+Restoration works for deleted notes/files, deleted subnotebooks (with all contents), renamed items, and items from any point in the timeline.
 
-------------------------------------------------------------------------------
-17. GIT-FILTER-REPO AS EMBEDDED MODULE WITH CUSTOM FILTERS
-------------------------------------------------------------------------------
+---
 
-git-filter-repo is not called as a subprocess. It is dynamically loaded as a Python module:
+### 17. git‑filter‑repo as Embedded Module with Custom Filters
 
-    filter_repo_path = os.path.join(os.path.dirname(__file__), "git_filter_repo.py")
-    spec = importlib.util.spec_from_file_location("git_filter_repo", filter_repo_path)
-    git_filter_repo = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(git_filter_repo)
+`git-filter-repo` is not called as a subprocess; it is dynamically loaded as a Python module:
 
-The module is modified with an `if __name__ == '__main__'` guard, enabling import without execution.
-This transforms a command-line tool into a proper Python library.
+```python
+filter_repo_path = os.path.join(os.path.dirname(__file__), "git_filter_repo.py")
+spec = importlib.util.spec_from_file_location("git_filter_repo", filter_repo_path)
+git_filter_repo = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(git_filter_repo)
+```
 
-Custom filter classes extend the base RepoFilter:
+The module is modified with an `if __name__ == '__main__'` guard, enabling import without execution. This transforms a command‑line tool into a proper Python library.
 
-UUIDEraseFilter
-    - Removes all commits containing a specific UUID
-    - Scans commit messages for UUID pattern
-    - Removes UUID from blob contents
-    - Tracks commits_removed and blobs_removed
-    - Preserves ERASED tombstone commits
+**Custom filter classes extend the base `RepoFilter`:**
 
-NotebookEraseFilter
-    - Removes entire notebook hierarchies in one pass
-    - Takes notebook UUID and list of all descendant UUIDs
-    - Scans for root:NOTEBOOK_UUID pattern
-    - Removes all commits containing any UUID in the notebook
+- **`UUIDEraseFilter`** – removes all commits containing a specific UUID; scans commit messages for the UUID pattern; removes the UUID from blob contents; tracks `commits_removed` and `blobs_removed`; preserves `ERASED` tombstone commits.
+- **`NotebookEraseFilter`** – removes entire notebook hierarchies in one pass; takes a notebook UUID and a list of all descendant UUIDs; scans for `root:NOTEBOOK_UUID` pattern; removes all commits containing any UUID in the notebook.
 
-Command-line integration:
-    --uuid-erase UUID
-    --notebook-erase NOTEBOOK_UUID:UUID1,UUID2,...
+**Command‑line integration:** `--uuid-erase UUID`, `--notebook-erase NOTEBOOK_UUID:UUID1,UUID2,...`
 
-Safety features:
-    - Never runs on project root
-    - FILTER_REPO_AVAILABLE flag for graceful fallback
-    - Repository validation before operations
-    - Atomic operations with rollback
+**Safety features:** never runs on the project root; `FILTER_REPO_AVAILABLE` flag for graceful fallback; repository validation before operations; atomic operations with rollback.
 
-This enables programmatic history rewriting, exception handling,
-integration into applications, and batch operations impossible with CLI tools.
+This enables programmatic history rewriting, exception handling, integration into applications, and batch operations impossible with CLI tools.
 
-------------------------------------------------------------------------------
-18. PERMANENT ERASURE WITH GIT-FILTER-REPO
-------------------------------------------------------------------------------
+---
 
-Two-tier deletion system:
+### 18. Permanent Erasure with git‑filter‑repo
 
-Soft delete (default):
-    Removes from current view only
-    History preserved in Git
-    Item findable via deleted* search
-    Restorable at any time
-    Git commit: "DELETED NOTE: title"
+Two‑tier deletion system:
 
-Hard erase (permanent):
-    Removes from Git history completely
-    Uses git-filter-repo custom filters
-    Creates tombstone commit marking erasure
-    Not recoverable
-    Git commit: "ERASED NOTE: title (tombstone)"
+- **Soft delete (default):** removes from current view only; history preserved in Git; item findable via `deleted*` search; restorable at any time; Git commit `type: DELETED`.
+- **Hard erase (permanent):** removes from Git history completely using `git-filter-repo`; creates a tombstone commit marking erasure; not recoverable; Git commit `type: ERASED`.
 
-Erasure process for single item:
-    1. Identify all commits containing UUID
-    2. Run UUIDEraseFilter to remove UUID from all files
-    3. Remove from current view
-    4. Create tombstone commit
-    5. Git garbage collection
+**Erasure process for a single item:**
+1. Identify all commits containing the UUID.
+2. Run `UUIDEraseFilter` to remove the UUID from all files.
+3. Remove from current view.
+4. Create a tombstone commit.
+5. Run Git garbage collection.
 
-Erasure process for entire notebook:
-    1. Collect ALL UUIDs in notebook hierarchy
-    2. Run NotebookEraseFilter with all UUIDs
-    3. Remove registry entry
-    4. Delete session keys
-    5. Delete notebook folder
-    6. Git garbage collection
+**Erasure process for an entire notebook:**
+1. Collect **all** UUIDs in the notebook hierarchy.
+2. Run `NotebookEraseFilter` with all UUIDs.
+3. Remove the registry entry.
+4. Delete session keys.
+5. Delete the notebook folder.
+6. Run Git garbage collection.
 
-Safety features:
-    Confirmation required ("type 'erase' to confirm")
-    Never runs on project root
-    FILTER_REPO_AVAILABLE flag for fallback
-    Atomic operations with rollback
+**Safety features:** confirmation required (“type ‘erase’ to confirm”); never runs on project root; `FILTER_REPO_AVAILABLE` flag for fallback; atomic operations with rollback.
 
-GDPR compliance:
-    Complete removal of personal data
-    Audit trail via tombstones
-    Configurable per request
-    Can erase entire notebooks
+**GDPR compliance:** complete removal of personal data; audit trail via tombstones; configurable per request; can erase entire notebooks.
 
 This is the only operation that breaks UUID continuity.
 
-------------------------------------------------------------------------------
-19. CRASH RECOVERY WITH UUID KEYING
-------------------------------------------------------------------------------
+---
+
+### 19. Crash Recovery with UUID Keying
 
 External editor sessions are protected against crashes.
 
-Recovery system:
-    Directory: .recovery/ in application root
-    Files named: {title}_{uuid[-6:]}.{ext}
-    UUID suffix ensures uniqueness across renames
+**Recovery system:** directory `.recovery/` in the application root. Files named `{title}_{uuid[-6:]}.{ext}`. The UUID suffix ensures uniqueness across renames.
 
-Autosave:
-    Background thread monitors temp file
-    Every 30 seconds, saves content to recovery file
-    Continues until editor closed
-    UUID keying preserves identity
+**Autosave:** a background thread monitors the temporary file. Every 30 seconds, it saves the content to a recovery file. Continues until the editor closes. UUID keying preserves identity.
 
-Recovery on access:
-    When notebook opened, check for recovery files
-    For each file matching notebook UUIDs:
-        Compare recovery timestamp with note.updated
-        If recovery newer: content was never saved
-        Restore content to note
-        Commit to Git with edit message
-        Delete recovery file
+**Recovery on access:** when a notebook is opened, the system checks for recovery files. For each file matching the notebook’s UUIDs, it compares the recovery timestamp with the note’s `updated` timestamp. If the recovery is newer, the content was never saved; the system restores the content to the note, commits the change with an edit message, and deletes the recovery file.
 
-Recovery scenarios:
-    Editor crash, system crash, application crash, power failure
-    Recovery file persists until successfully merged
+**Recovery scenarios:** editor crash, system crash, application crash, power failure. The recovery file persists until successfully merged.
 
-UUID keying ensures:
-    Recovery files map to correct notes
-    Survives renames (UUID unchanged)
-    Survives moves between notebooks (UUID unchanged)
-    No cross-notebook contamination
+**UUID keying ensures:** recovery files map to the correct notes, survive renames (UUID unchanged), survive moves between notebooks (UUID unchanged), and there is no cross‑notebook contamination.
 
-------------------------------------------------------------------------------
-20. CONFIGURABLE EDITOR SYSTEM
-------------------------------------------------------------------------------
+---
+
+### 20. Configurable Editor System
 
 Users can choose their preferred editor for writing and viewing.
 
-Configuration file (config.json):
-    {
-        "edit": "micro",
-        "view": "micro",
-        "info": "Available editors: micro, nvim, vim, helix, hx, emacs -nw, nano, kate, geany, gedit, pluma, mousepad, leafpad, mg, jed, joe"
-    }
+**Configuration file (`config.json`):**
+```json
+{
+    "edit": "micro",
+    "view": "micro",
+    "info": "Available editors: micro, nvim, vim, helix, hx, emacs -nw, nano, kate, geany, gedit, pluma, mousepad, leafpad, mg, jed, joe"
+}
+```
 
-Editor resolution:
-    First launch creates config.json with defaults
-    User can edit manually, changes take effect immediately
-    No settings screen - configuration is an action, not a persistent UI element
+**Editor resolution:** first launch creates `config.json` with defaults. The user can edit it manually; changes take effect immediately. No settings screen – configuration is an action, not a persistent UI element.
 
-Editor selection:
-    edit: editor for writing/modifying notes
-    view: editor for viewing (read-only mode)
+**Editor selection:** `edit` – editor for writing/modifying notes; `view` – editor for viewing (read‑only mode).
 
-Editor detection:
-    Tests if editor exists in PATH
-    Falls back to next available in list
-    Ensures at least one editor works
+**Editor detection:** tests if the editor exists in `PATH`; falls back to the next available in the list; ensures at least one editor works.
 
-Special handling:
-    nvim, vim, emacs: inject autosave commands/configuration
-    Other editors: launch normally
+**Special handling:** for `nvim`, `vim`, `emacs`, the system injects autosave commands/configuration. Other editors are launched normally.
 
-External editor invocation:
-    Temporary file with correct extension
-    Editor launched with appropriate mode (read-only if view)
-    Content read back after editor closes
-    Recovery thread monitors during editing
+**External editor invocation:** a temporary file with the correct extension is created. The editor is launched with the appropriate mode (read‑only if view). Content is read back after the editor closes. A recovery thread monitors during editing.
 
-------------------------------------------------------------------------------
-21. DATA-AS-UI (ZERO LEARNING CURVE)
-------------------------------------------------------------------------------
+---
 
-The interface is the data. The data is the interface.
+### 21. Data‑as‑UI (Zero Learning Curve)
 
-Numbered items:
-    Every displayed item has a number
-    [1] Note title, [2] Subnotebook name, [3] Search result, [4] Activity entry
+The interface **is** the data. The data **is** the interface.
 
-Numbered commands:
-    v1 → view item 1, d2 → delete item 2, r3 → rename item 3, j4 → jump to position 4
+- **Numbered items:** every displayed item has a number (`[1]`, `[2]`, …).
+- **Numbered commands:** `v1` views item 1, `d2` deletes item 2, `r3` renames item 3, `j4` jumps to position 4.
+- **Path numbering:** `[1]root/[2]child/[3]grandchild/`, `j2` jumps to position 2 (child).
+- **Footer options:** `[C]reate  [V]iew  [S]earch  [D]elete  [B]ack  [Q]uit` – each a single keystroke.
 
-Path numbering:
-    [1]root/[2]child/[3]grandchild/
-    j2 → jump to position 2 (child)
+No menus, no toolbars, no context menus, no modal dialogs (except confirmations). No modes – the same commands work everywhere. No settings screen – configuration dissolves into necessity.
 
-Footer options:
-    [C]reate  [V]iew  [S]earch  [D]elete  [B]ack  [Q]uit
-    Each is a single keystroke
+**Cognitive principles:**
+- Recognition over recall (users see options)
+- Affordance (numbers invite pressing)
+- Consistency (same commands everywhere)
+- Discoverability (footer shows all options)
+- Progressive disclosure (buttons appear only when useful)
 
-No menus, no toolbars, no context menus, no modal dialogs (except confirmations)
-No modes - same commands work everywhere
-No settings screen - configuration dissolves into necessity
+**Examples:** notebook list → `[1] Project [2] Work [3] Personal`; note list → `[1] Meeting [2] Todo [3] Ideas`; search results → `[1] file.txt [2] notes.md`; activity → `[1] created note [2] updated file`.
 
-Cognitive principles:
-    Recognition over recall (users see options)
-    Affordance (numbers invite pressing)
-    Consistency (same commands everywhere)
-    Discoverability (footer shows all options)
-    Progressive disclosure (buttons appear only when useful)
+Numbers are not decoration; they are commands. The interface teaches itself through use. No learning curve, no tutorial, no documentation needed to start.
 
-The data IS the interface:
-    Notebook list → [1] Project [2] Work [3] Personal
-    Note list → [1] Meeting [2] Todo [3] Ideas
-    Search results → [1] file.txt [2] notes.md
-    Activity → [1] created note [2] updated file
+---
 
-Numbers are not decoration. They are commands.
-The interface teaches itself through use.
-No learning curve. No tutorial. No documentation needed to start.
+### 22. Terminal User Interface as Integral Component
 
-------------------------------------------------------------------------------
-22. TERMINAL USER INTERFACE AS INTEGRAL COMPONENT
-------------------------------------------------------------------------------
+The terminal user interface is not a separate component; it is the visible manifestation of the integrated logic chain described above. Every element of the TUI is a direct expression of the underlying architecture.
 
-The terminal user interface is not a separate component. It is the visible manifestation of the integrated logic chain described above.
+- **Navigation:** numbered lists are the navigation layer made visible; the path display is the fish‑eye algorithm rendered; `j3` is relative navigation in action; no forward button because the stack is transparent.
+- **Search:** `s` query is unified search at work; results show action/type based on query intent; location brackets show smart path (relative to context).
+- **History:** `t` command is timeline reconstruction; `a` command is activity aggregation; `v` on a historical item shows the resurrected state.
+- **Operations:** `d` with confirmation is soft delete; `d` + ‘erase’ is hard delete with `git-filter-repo`; `r` is rename (UUID preserved); `x` is export (for files).
+- **Navigation controls:** `b` is stack navigation (pop); `jb` is jump back through history (temporal return); page indicators respect working memory limits.
+- **Visual elements:** header format maintains cognitive consistency; footer options reflect available operations (contextual); lock icons (🔐/🔒) show encryption state; character stats (`+245/-89`) show edit magnitude.
 
-Every element of the TUI is a direct expression of the underlying architecture:
+The TUI cannot be separated from the invention. It is the invention, made visible. The interface disappears. Only the writing remains.
 
-Navigation:
-    Numbered lists are the navigation layer made visible
-    Path display is the fish-eye algorithm rendered
-    j3 command is relative navigation in action
-    No forward button because stack is transparent
+---
 
-Search:
-    s query is unified search at work
-    Results show action/type based on query intent
-    Location brackets show smart path (relative to context)
+### 23. Cross‑Platform Adaptations (Future Implementations)
 
-History:
-    t command is timeline reconstruction
-    a command is activity aggregation
-    v command on historical item shows resurrected state
+The invention is platform‑independent. The following adaptations are disclosed as embodiments of the same integrated system:
 
-Operations:
-    d with confirmation is soft delete
-    d + 'erase' is hard delete with filter-repo
-    r is rename (UUID preserved)
-    x is export (for files)
+- **Web adaptation:** relative navigation via numbered elements (clickable); unified search across all states; activity view; timeline; resurrection with confirmation dialog; permanent erasure with admin confirmation; data‑as‑UI; fish‑eye path display adapted to browser width; stack‑based navigation with browser history integration; UUID permanence; Git temporal database via API layer; encryption via Web Crypto API (same AES‑GCM); system fingerprint via browser fingerprinting (fallback to `localStorage`).
 
-Navigation controls:
-    b command is stack navigation (pop)
-    jb is jump back through history (temporal return)
-    Page indicators respect working memory limits
+- **Desktop native adaptation:** keyboard‑driven navigation with numbered access; unified search; activity view as a native window; timeline interface; resurrection with native dialog; permanent erasure with system‑level confirmation; fish‑eye path display optimised for window width; crash recovery with native file system integration; external editor spawning with syntax highlighting; configurable editor via native preferences; system fingerprint via hardware IDs (same as the terminal version).
 
-Visual elements:
-    Header format maintains cognitive consistency
-    Footer options reflect available operations (contextual)
-    Lock icons (🔐/🔒) show encryption state
-    Character stats (+245/-89) show edit magnitude
+- **Mobile adaptation:** spatial navigation via numbered gestures or taps; unified search with touch‑friendly filters; activity view as a scrollable timeline; timeline view; resurrection with swipe gestures; fish‑eye path display adapted to screen width; UUID permanence via local storage; Git temporal database via local storage or API; crash recovery with mobile background processing; biometric unlock for encrypted notebooks.
 
-The TUI cannot be separated from the invention. It is the invention, made visible.
-The interface disappears. Only the writing remains.
+- **Future platform adaptations:** any future platform that implements relative spatial navigation, unified search across all states, activity view, timeline, resurrection, permanent erasure with confirmation, data‑as‑UI, fish‑eye or adaptive path display, UUID‑based permanent item identity, Git‑based temporal queryability, crash recovery with key‑based restoration, and transparent encryption with system‑bound keys – practices the invention disclosed herein. The specific implementation may adapt to platform constraints, but the cognitive patterns and integrated logic chain remain the property of this prior art.
 
-------------------------------------------------------------------------------
-23. CROSS-PLATFORM ADAPTATIONS (FUTURE IMPLEMENTATIONS)
-------------------------------------------------------------------------------
+---
 
-The invention is platform-independent. The following adaptations are disclosed as embodiments of the same integrated system:
-
-WEB ADAPTATION
-------------------------------------------------------------------------------
-- Relative navigation via numbered elements (clickable)
-- Unified search across all states with type/action filters
-- Activity view for temporal aggregation
-- Timeline for version history
-- Resurrection with confirmation dialog
-- Permanent erasure with admin confirmation
-- Data-as-UI with all displayed items actionable
-- Fish-eye path display adapted to browser width
-- Stack-based navigation with browser history integration
-- UUID permanence maintained across sessions
-- Git temporal database accessible via API layer
-- Encryption via Web Crypto API (same AES-GCM)
-- System fingerprint via browser fingerprinting (fallback to localStorage)
-
-DESKTOP NATIVE ADAPTATION
-------------------------------------------------------------------------------
-- Keyboard-driven navigation with numbered access
-- Unified search across all states
-- Activity view as native window
-- Timeline interface for version history
-- Resurrection with native dialog
-- Permanent erasure with system-level confirmation
-- Fish-eye path display optimized for window width
-- Crash recovery with native file system integration
-- External editor spawning with syntax highlighting
-- Configurable editor via native preferences
-- System fingerprint via hardware IDs (same as terminal version)
-
-MOBILE ADAPTATION
-------------------------------------------------------------------------------
-- Spatial navigation via numbered gestures or taps
-- Unified search with touch-friendly filters
-- Activity view as scrollable timeline
-- Timeline view for version history
-- Resurrection with swipe gestures
-- Fish-eye path display adapted to screen width
-- UUID permanence via local storage
-- Git temporal database via local storage or API
-- Crash recovery with mobile background processing
-- Biometric unlock for encrypted notebooks
-
-FUTURE PLATFORM ADAPTATIONS
-------------------------------------------------------------------------------
-Any future platform that implements:
-- Relative spatial navigation to hierarchical data
-- Unified search across all states (current, deleted, renamed)
-- Activity view for temporal aggregation
-- Timeline interface for version history
-- Resurrection capability for any deleted item
-- Permanent erasure with confirmation
-- Data-as-UI with actionable displayed elements
-- Fish-eye or adaptive path display
-- UUID-based permanent item identity
-- Git-based temporal queryability
-- Crash recovery with key-based restoration
-- Transparent encryption with system-bound keys
-
-...practices the invention disclosed herein. The specific implementation may adapt to platform constraints, but the cognitive patterns and integrated logic chain remain the property of this prior art.
-
-------------------------------------------------------------------------------
-24. COGNITIVE ALIGNMENT (EMERGENT PROPERTY)
-------------------------------------------------------------------------------
+### 24. Cognitive Alignment (Emergent Property)
 
 The following properties emerge from the integrated system:
 
-Spatial memory alignment
-    Relative numbering matches Tversky's spatial mental models (1992).
-    Users navigate by position, not path.
-    j3 becomes reflex, not conscious decision.
-    No forward button eliminates disorientation.
+- **Spatial memory alignment:** relative numbering matches Tversky’s spatial mental models (1992). Users navigate by position, not path. `j3` becomes reflex, not a conscious decision. No forward button eliminates disorientation.
+- **Temporal memory alignment:** unified search across all states matches episodic recall. Activity view shows changes over time. Timeline shows evolution – separate but complementary. Users remember “before I deleted it” not timestamps. `jb` command provides temporal return to the previous cognitive context.
+- **Working memory alignment:** fish‑eye display (4–6 chunks) matches Miller’s 7±2 (1956). Page indicators maintain orientation without overload. No forward button reduces decision count.
+- **Cognitive load alignment:** zero extraneous UI matches Sweller’s load theory (1988). All attention is available for writing. No settings screen means no configuration decisions.
+- **Recognition over recall:** users recognise options in the footer. Numbers invite pressing. Commands are discovered, not memorised. Every action is visible on the current screen.
+- **Affordance perception:** numbered items afford “press number” (Gibson, 1979). Footer options afford “press letter”. No training required. The interface teaches itself.
+- **Cognitive disappearance:** when tool and thought align, the tool disappears. This system disappears. Only the writing remains. The user never thinks about the software.
+- **Embodied cognition:** commands migrate to muscle memory (Barsalou, 1999). `j3` becomes reflex, not a conscious decision. The body remembers what the mind forgets.
+- **Flow state:** uninterrupted writing enables flow (Csikszentmihalyi, 1990). No notifications, no interruptions, no modals. The system waits. The user writes.
+- **Errorless learning:** soft delete prevents permanent data loss from mistakes. Resurrection provides recovery from accidental deletion. Crash recovery ensures work is never lost. The user never experiences irreversible failure.
 
-Temporal memory alignment
-    Unified search across all states matches episodic recall.
-    Activity view shows changes over time.
-    Timeline shows evolution — separate but complementary.
-    Users remember "before I deleted it" not timestamps.
-    jb command provides temporal return to previous cognitive context.
+These theories were not consulted during development. They were discovered afterward and are cited to explain observed behaviour. The system existed before the explanation.
 
-Working memory alignment
-    Fish-eye display (4-6 chunks) matches Miller's 7±2 (1956).
-    Page indicators maintain orientation without overload.
-    No forward button reduces decision count.
+---
 
-Cognitive load alignment
-    Zero extraneous UI matches Sweller's load theory (1988).
-    All attention is available for writing.
-    No settings screen means no configuration decisions.
+### 25. Zero Background Processes (Cognitive Efficiency)
 
-Recognition over recall
-    Users recognize options in footer.
-    Numbers invite pressing.
-    Commands are discovered, not memorized.
-    Every action is visible on current screen.
-
-Affordance perception
-    Numbered items afford "press number" (Gibson, 1979).
-    Footer options afford "press letter".
-    No training required. The interface teaches itself.
-
-Cognitive disappearance
-    When tool and thought align, the tool disappears.
-    This system disappears. Only the writing remains.
-    The user never thinks about the software.
-
-Embodied cognition
-    Commands migrate to muscle memory (Barsalou, 1999).
-    j3 becomes reflex, not conscious decision.
-    The body remembers what the mind forgets.
-
-Flow state
-    Uninterrupted writing enables flow (Csikszentmihlyi, 1990).
-    No notifications, no interruptions, no modals.
-    The system waits. The user writes.
-
-Errorless learning
-    Soft delete prevents permanent data loss from mistakes.
-    Resurrection provides recovery from accidental deletion.
-    Crash recovery ensures work is never lost.
-    The user never experiences irreversible failure.
-
-These theories were not consulted during development.
-They were discovered afterward and are cited to explain observed behavior.
-The system existed before the explanation.
-
-------------------------------------------------------------------------------
-25. ZERO BACKGROUND PROCESSES (COGNITIVE EFFICIENCY)
-------------------------------------------------------------------------------
-
-The system performs no work unless the user initiates an action:
+The system performs **no work unless the user initiates an action**:
 
 - No background indexing threads
 - No periodic cache refreshes
-- No auto-save timers (only during active editing, and that thread dies when editor closes)
-- No pre-loading of notebooks or notes
+- No auto‑save timers (only during active editing, and that thread dies when the editor closes)
+- No pre‑loading of notebooks or notes
 - No background sync processes
 
-All operations—loading, decrypting, searching, committing—happen synchronously in response to user input.
+All operations – loading, decrypting, searching, committing – happen synchronously in response to user input.
 
-Memory footprint:
-    Locked notebooks: only registry entry (~200 bytes)
-    Unlocked notebook structure: ~10KB per 100 notes
-    Note content: loaded only when viewed
-    Encryption keys: 32 bytes per unlocked notebook
-    Timeline/activity results: limited to 50 items
+**Memory footprint:**
+- Locked notebooks: only a registry entry (~200 bytes)
+- Unlocked notebook structure: ~10 KB per 100 notes
+- Note content: loaded only when viewed
+- Encryption keys: 32 bytes per unlocked notebook
+- Timeline/activity results: limited to 50 items
 
-Lock button as explicit memory manager:
-    Unloads encryption keys from RAM
-    Clears notebook structure (notes, subnotebooks)
-    Removes content cache
-    User controls what stays in memory
-    Matches human cognitive model of working memory
+**Lock button as explicit memory manager:** unloads encryption keys from RAM; clears notebook structure (notes, subnotebooks); removes content cache. The user controls what stays in memory, matching the human cognitive model of working memory.
 
-This aligns with the brain's default mode network:
-    The brain is most active and creative when at rest
-    No constant background processing
-    The system is present only when needed
+This aligns with the brain’s default mode network: the brain is most active and creative when at rest. No constant background processing. The system is present only when needed.
 
-------------------------------------------------------------------------------
-26. INTEGRATED SYSTEM
-------------------------------------------------------------------------------
+---
 
-The above twenty-six layers function as an integrated whole.
-Each layer depends on and serves the layers above.
-All layers serve the user's experience of disappearance.
+### 26. Integrated System
 
-This specific combination constitutes a novel, non-obvious, and fully disclosed system for human-computer interaction that mirrors human cognitive patterns.
+The above 26 layers function as an integrated whole. Each layer depends on and serves the layers above. All layers serve the user’s experience of disappearance.
 
-===============================================================================
-                            PRIOR ART ASSERTION
-===============================================================================
+This specific combination constitutes a novel, non‑obvious, and fully disclosed system for human‑computer interaction that mirrors human cognitive patterns.
 
-I, sys_ronin, do hereby establish this document and the accompanying
-source code repository as prior art under **35 U.S.C. § 102(a)(1)** 
-and **Articles 54 & 56 of the European Patent Convention (EPC)**.
+---
 
-Date of public disclosure: February 2026 (initial), April 2026 (updated)
-Mode of disclosure: Public GitHub repository
-Status: Irrevocable and unwithdrawable
+## 27. Portable Secure Session Vaults (Custom Locations)
+
+The secure session vault is no longer fixed to a single location. A `VaultManager` maintains a registry (`vaults_registry.json`) that maps a vault name to an absolute path or URL. Users can:
+
+- Create new vaults at any location (local disk, USB, network share, cloud bucket, WebDAV server)
+- Select an existing vault for a notebook
+- Switch a notebook from the default vault to a custom vault, and back
+
+Each notebook stores its associated vault identifier in the master registry entry. The `SessionKeyVault` transparently resolves the correct vault file path via the vault registry.
+
+If a custom vault file is missing (e.g., USB unplugged), the system detects this during key resolution and offers the user options: retry, locate the vault manually, or use the recovery phrase to re‑create the entry in a new (or default) vault.
+
+This feature enables **complete physical separation** of the key store from the application and the data, without compromising security.
+
+---
+
+## 28. Trusted Devices Management
+
+The secure session vault stores per‑machine entries that include:
+
+- `timestamp` (creation time)
+- `nonce` and `encrypted_keys` (the actual key material)
+- `active` flag for the current machine
+- `system_name` (hostname) – a human‑readable identifier
+
+The system provides a user interface (`_show_trusted_devices`) that lists all trusted devices for a notebook, marking the current active device. The user can **remove** any entry, including the current machine’s own entry. Removing the current machine’s entry immediately locks the notebook and clears all cached keys; the notebook can only be unlocked again using the recovery phrase.
+
+No central server is involved. Each machine stores its own copy of the vault file, but entries are cryptographically bound to the hardware fingerprint of the machine that created them. Removing an entry from one copy of the vault does **not** affect other copies – but the user can propagate the change by copying the updated vault file.
+
+This provides a **decentralised, offline‑first device revocation mechanism**.
+
+---
+
+## 29. Missing Vault Detection and Active Cache Validation
+
+The `SessionKeyVault` (a transparent dict‑like cache) validates the existence of the underlying vault file **before every cache hit**:
+
+```python
+if notebook_id in self._cache:
+    vault_path = self.manager._get_vault_path(notebook_id)
+    if vault_path and os.path.exists(vault_path):
+        return self._cache[notebook_id]
+    else:
+        del self._cache[notebook_id]   # invalidate immediately
+```
+
+If the vault file is missing (USB unplugged, network share unmounted, file deleted), the cached entry is deleted instantly. Subsequent accesses will either fail cleanly (“missing vault”) or trigger a recovery flow (prompt for phrase).
+
+During key resolution (when the cache is empty or invalidated), the system explicitly checks for the vault file. If it is missing, it presents a user dialog with options:
+1. Retry (after inserting the missing device)
+2. Locate the vault file manually (update the registry)
+3. Use the recovery phrase (will create a new vault entry)
+4. Cancel
+
+This ensures that **no operation can use stale keys** and that the system can recover gracefully from component loss.
+
+---
+
+## 30. Docker / Cloud Ephemeral Fingerprinting
+
+Because the hardware fingerprint is derived at runtime from the execution environment, the same code can run inside a Docker container or a cloud VM. The container’s fingerprint is based on its container ID, network stack, hostname, and other ephemeral identifiers.
+
+When the container is destroyed, the fingerprint is lost. Any vault entries that were created for that container become undecryptable – even if the container image is re‑started later. This makes the system suitable for **ephemeral, stateless workloads** in the cloud.
+
+Users can:
+- Run the application in a Docker container on any cloud provider
+- Store the vault file on a separate network share or object storage (e.g., S3)
+- Store the notebook data in a public Git repository or on another volume
+
+The three components (app, vault, notebook) can reside on three different cloud services. The system resolves the vault URL via the vault registry, fetches it over HTTPS, decrypts the entry using the container’s runtime fingerprint, and performs the operation – all without trusting the cloud provider.
+
+---
+
+## 31. O(1) Deterministic UUID Chains and Multiple‑Origin Coordination
+
+The system does not use a central database, a transaction manager, or a background orchestrator. Instead, every operation is performed by following **multiple independent UUID resolution chains** that start from different origins:
+
+- **Chain A** – resolves the notebook folder path (from the master registry)
+- **Chain B** – resolves the decryption keys (master registry → vault name → vault registry → vault file → entry UUID → hardware fingerprint decryption)
+- **Chain C** – prepares Git metadata (UUIDs, change statistics)
+
+These chains execute sequentially (or in parallel when independent) and converge only at the final write (for create/edit/delete) or display (for search/timeline/activity). Each step is an O(1) dictionary lookup or a fixed cryptographic operation. The number of steps is constant, regardless of the total number of notebooks, notes, or trusted devices.
+
+The resolution chain can cross network boundaries (vault file on S3, notebook folder on a network drive, Git remote on GitHub) without changing its complexity.
+
+This architecture is **stateless**: after each operation, all transient state is discarded. The system has no long‑running memory.
+
+---
+
+## 32. Eternal License
+
+The entire system is released under the **Eternal License**, which explicitly:
+
+- **Prohibits patenting** any concept disclosed in the repository or its documentation
+- **Requires no attribution** (attribution is a courtesy, not a demand)
+- **Allows** any use, modification, distribution, and building of commercial products
+- **Forbids** asserting intellectual property rights over the disclosed ideas, removing or altering the license from the original source, and suing others for implementing the concepts
+
+The license cites **35 U.S.C. § 102(a)(1)** (US) and **EPC Article 54(2)** (Europe), and references **EPO decision G 1/23 (2025)** which establishes that public availability alone is sufficient for prior art.
+
+The license is not a contract; it is a philosophical statement encoded as text. It asserts that the technology belongs to no one.
+
+---
+
+## 33. Prior Art Assertion
+
+I, **sys_ronin**, do hereby establish this document and the accompanying source code repository as prior art under **35 U.S.C. § 102(a)(1)** (United States) and **Articles 54 & 56 of the European Patent Convention (EPC)**.
+
+- **Date of public disclosure:** February 2026 (initial), May 2026 (updated)
+- **Mode of disclosure:** public GitHub repository
+- **Status:** irrevocable and unwithdrawable
 
 All concepts, implementations, combinations, adaptations, and variations disclosed herein are now and forever part of the public domain.
 
-No party may:
+**No party may:**
 - Obtain valid patent claims covering any disclosed concept
 - Enforce existing patents against implementations of these concepts
 - Assert trade secret protection over any disclosed implementation
 - Claim exclusive rights to any combination herein disclosed
 - Patent any adaptation or variation that preserves the disclosed cognitive patterns
 
-------------------------------------------------------------------------------
-                    HUMAN COGNITION AS PRIOR ART
-------------------------------------------------------------------------------
+### Human Cognition as Prior Art
 
-The patterns this system implements are not inventions.
-They are observations of how human cognition already works.
+The patterns this system implements are **not inventions**; they are observations of how human cognition already works. A system that implements human cognitive patterns cannot be patented as novel or non‑obvious. The patterns pre‑exist in every human brain. The implementation merely reflects them.
 
-A system that implements human cognitive patterns
-cannot be patented as novel or non-obvious.
+Any future system that preserves these patterns – spatial indexing, temporal recall, working memory limits, recognition over recall, affordance perception, cognitive disappearance, embodied interaction, flow state, errorless learning, zero background processing – practices what is disclosed herein.
 
-The patterns pre-exist in every human brain.
-The implementation merely reflects them.
+This is not a claim of invention. This is an observation of what already exists. The system is not the invention; human cognition is the invention. This system merely implements it.
 
-Any future system that preserves these patterns
-—spatial indexing, temporal recall, working memory limits,
-recognition over recall, affordance perception,
-cognitive disappearance, embodied interaction, flow state,
-errorless learning, zero background processing—
-practices what is disclosed herein.
+### Verification
 
-This is not a claim of invention.
-This is an observation of what already exists.
+- **Repository:** [https://github.com/sys-ronin/terminal-notes](https://github.com/sys-ronin/terminal-notes)
+- **First commit:** February 2026
+- **Documents:** `prior_art_terminal_notes.md` (this document), `/documents/*.*`, `LICENSE`, `README.md`
+- **Source code & everything else:** `*.*`
 
-The system is not the invention.
-Human cognition is the invention.
-This system merely implements it.
+All content is public and freely accessible. No confidentiality obligations apply. No embargo period was observed.
 
-------------------------------------------------------------------------------
+---
 
-All concepts, implementations, combinations, adaptations, and variations disclosed herein — including but not limited to those that reflect, implement, or are derived from the cognitive patterns described above — are now and forever part of the public domain.
+**End of Prior Art Disclosure**
 
-No party may claim exclusive rights to any implementation that preserves these cognitive patterns, as the patterns themselves are not invented but observed.
-
-This disclosure is made in the public interest.
-It may be cited in any patent examination, litigation, or prior art search.
-
-No legal advice is offered. No warranty is provided.
-This document is a statement of fact, not a legal opinion.
-
-===============================================================================
-                            VERIFICATION
-===============================================================================
-
-Repository:    https://github.com/sys-ronin/terminal-notes
-First commit:  April 2026
-Documents:     prior_arts_terminal_notes.md (this document)
-              /documents/*.*
-              LICENSE
-              README.md
-Sourcecode:    source/*.*
-
-All content is public and freely accessible.
-No confidentiality obligations apply.
-No embargo period was observed.
-
-===============================================================================
-END OF PRIOR ART DISCLOSURE
-===============================================================================
+*This document is a statement of fact, not a legal opinion. No legal advice is offered. No warranty is provided.*
+```

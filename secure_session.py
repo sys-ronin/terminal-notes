@@ -19,6 +19,7 @@ from typing import Optional, Tuple, Dict, List
 
 from cryptography.hazmat.primitives.ciphers.aead import AESGCM
 
+VAULT_VERSION = 2
 
 class SecureSessionStorage:
     """
@@ -39,150 +40,106 @@ class SecureSessionStorage:
         self.config_dir = os.path.join(app_dir, "config")
         os.makedirs(self.config_dir, exist_ok=True)
         
-        # Use custom vault path if provided, otherwise default
+        # Use custom vault path if provided, otherwise default (relative to app)
         if vault_path:
             self.vault_path = vault_path
         else:
+            # DEFAULT VAULT - relative to app directory
             self.vault_path = os.path.join(self.config_dir, "session.vault")
         
         self._system_fingerprint = None
         self._vault_cache = None
     
+    def get_vault_id(self) -> str:
+        """Extract vault ID from vault filename"""
+        basename = os.path.basename(self.vault_path)
+        if basename == "session.vault":
+            return "default"
+        if basename.endswith(".vault"):
+            return basename[:-6]
+        return "unknown"
+    
     # ========================================================================
     # Public API
     # ========================================================================
     
-    def _add_entry(self, notebook_id: str, fingerprint: bytes, fingerprint_hash: str, system_name: str, timestamp: int):
-        """Add a new entry to the vault (used during vault migration)"""
+    def add_entry(self, entry_uuid: str, notebook_id: str, encrypted_keys: bytes, 
+                  nonce: bytes = None, timestamp: int = None) -> bool:
+        """Add or update an entry in the vault"""
+        import time
+        
         vault = self._read_vault()
-        entries = vault.get(notebook_id, [])
         
-        # Check if this system already has an entry
-        for entry in entries:
-            if entry.get("active") and entry.get("system_name") == system_name:
-                # Update timestamp
-                entry["timestamp"] = timestamp
-                self._write_vault(vault)
-                return
+        if "entries" not in vault:
+            vault["entries"] = {}
         
-        # Add new entry
-        key = self._derive_key(timestamp, fingerprint)
-        nonce = os.urandom(12)
+        vault["entries"][entry_uuid] = {
+            "notebook_id": notebook_id,
+            "timestamp": timestamp or time.time_ns(),
+            "nonce": nonce or os.urandom(12),
+            "encrypted_keys": encrypted_keys
+        }
         
-        # Store fingerprint_hash and system_name
-        data = f"{fingerprint_hash}:{system_name}".encode()
-        encrypted_data = self._encrypt(data, key, nonce)
-        
-        entries.append({
-            "timestamp": timestamp,
-            "nonce": nonce,
-            "encrypted_keys": encrypted_data,
-            "active": True,
-            "created": timestamp,
-            "system_name": system_name
-        })
-        
-        vault[notebook_id] = entries
         self._write_vault(vault)
+        return True
     
     
-    def store_keys(self, notebook_id: str, password_key: bytes, phrase_key: bytes) -> bool:
-        try:
+    def store_keys(self, notebook_id: str, password_key: bytes, phrase_key: bytes) -> str:
+        """
+        Store keys in vault and return the generated entry UUID.
+        This replaces the old store_keys behavior.
+        """
+        import uuid
+        from crypto import Crypto
+        
+        fingerprint = self._get_system_fingerprint()
+        
+        # Ensure keys are 32 bytes
+        if len(password_key) != 32:
             import hashlib
-            
-            # Ensure keys are 32 bytes (AES-256 requirement)
-            if len(password_key) != 32:
-                password_key = hashlib.sha256(password_key).digest()
-            if len(phrase_key) != 32:
-                phrase_key = hashlib.sha256(phrase_key).digest()
-            
-            fingerprint = self._get_system_fingerprint()
-            vault = self._read_vault()
-            system_name = socket.gethostname()  # ← ADD THIS
-            
-            entries = vault.get(notebook_id, [])
-            
-            # Find existing entry for this machine (by successful decryption)
-            found_index = -1
-            for i, entry in enumerate(entries):
-                try:
-                    key = self._derive_entry_key(entry["timestamp"], fingerprint)
-                    self._decrypt(entry["encrypted_keys"], key, entry["nonce"])
-                    found_index = i
-                    break
-                except Exception:
-                    continue
-            
-            # Create new entry with new timestamp
-            timestamp = time.time_ns()
-            key = self._derive_entry_key(timestamp, fingerprint)
-            nonce = os.urandom(12)
-            
-            plaintext = password_key + b":" + phrase_key
-            encrypted_keys = self._encrypt(plaintext, key, nonce)
-            
-            new_entry = {
-                "timestamp": timestamp,
-                "nonce": nonce,
-                "encrypted_keys": encrypted_keys,
-                "active": True,
-                "created": timestamp,
-                "system_name": system_name  # ← ADD THIS
-            }
-            
-            if found_index >= 0:
-                # Replace existing entry for this machine
-                entries[found_index] = new_entry
-            else:
-                # New machine - add entry
-                entries.append(new_entry)
-            
-            vault[notebook_id] = entries
-            self._write_vault(vault)
-            return True
-            
-        except Exception as e:
-            print(f"[DEBUG] store_keys error: {e}")
-            return False
+            password_key = hashlib.sha256(password_key).digest()
+        if len(phrase_key) != 32:
+            import hashlib
+            phrase_key = hashlib.sha256(phrase_key).digest()
+        
+        # Combine keys
+        combined = password_key + phrase_key
+        
+        # Generate nonce and encrypt
+        nonce = os.urandom(12)
+        aesgcm = AESGCM(fingerprint)
+        encrypted_keys = aesgcm.encrypt(nonce, combined, None)
+        
+        # Generate entry UUID
+        entry_uuid = str(uuid.uuid4())
+        
+        # Add to vault
+        self.add_entry(entry_uuid, notebook_id, encrypted_keys, nonce)
+        
+        return entry_uuid
     
-    def get_keys(self, notebook_id: str) -> Tuple[Optional[bytes], Optional[bytes]]:
+    def get_keys(self, entry_uuid: str) -> Optional[tuple]:
+        """
+        Retrieve and decrypt keys by entry UUID.
+        Returns (password_key, phrase_key) or None.
+        """
+        fingerprint = self._get_system_fingerprint()
+        
+        entry = self.get_entry(entry_uuid)
+        if not entry:
+            return None
+        
         try:
-            fingerprint = self._get_system_fingerprint()
-            vault = self._read_vault()
-            entries = vault.get(notebook_id, [])
+            aesgcm = AESGCM(fingerprint)
+            decrypted = aesgcm.decrypt(entry["nonce"], entry["encrypted_keys"], None)
             
-            if not entries:
-                return None, None
+            # Split into password_key and phrase_key (both 32 bytes)
+            password_key = decrypted[:32]
+            phrase_key = decrypted[32:64]
             
-            for entry in entries:
-                if entry.get("active"):
-                    try:
-                        key = self._derive_entry_key(entry["timestamp"], fingerprint)
-                        encrypted_data = entry.get("encrypted_keys")
-                        plaintext = self._decrypt(encrypted_data, key, entry["nonce"])
-                        password_key, phrase_key = self._parse_keys(plaintext)
-                        return password_key, phrase_key
-                    except Exception:
-                        entry["active"] = False
-                        self._write_vault(vault)
-                        break
-            
-            for entry in entries:
-                try:
-                    key = self._derive_entry_key(entry["timestamp"], fingerprint)
-                    encrypted_data = entry.get("encrypted_keys")
-                    plaintext = self._decrypt(encrypted_data, key, entry["nonce"])
-                    password_key, phrase_key = self._parse_keys(plaintext)
-                    entry["active"] = True
-                    self._write_vault(vault)
-                    return password_key, phrase_key
-                except Exception:
-                    continue
-            
-            return None, None
-            
+            return password_key, phrase_key
         except Exception:
-            return None, None
+            return None
     
     def get_active_entry(self, notebook_id: str) -> Optional[Dict]:
         """Get the active entry for a notebook"""
@@ -245,6 +202,10 @@ class SecureSessionStorage:
         print("=" * 50)
         
         return self._recover_with_phrase(notebook_id, folder_path, folder_name)
+    
+    def reload(self):
+        """Force reload vault from disk, invalidating cache"""
+        self._vault_cache = None
 
 
     def _recover_with_phrase(self, notebook_id: str, folder_path: str, folder_name: str):
@@ -469,156 +430,132 @@ class SecureSessionStorage:
         return pw_key, ph_key
     
     def _read_vault(self) -> Dict[str, List[Dict]]:
-        """Read entire binary vault file"""
+        """Read entire binary vault file - NEW FORMAT (version 2)"""
         if self._vault_cache is not None:
             return self._vault_cache
         
         if not os.path.exists(self.vault_path):
-            self._vault_cache = {}
+            self._vault_cache = {"version": VAULT_VERSION, "entries": {}}
             return self._vault_cache
         
         try:
             with open(self.vault_path, 'rb') as f:
-                # Read version
                 version_data = f.read(4)
                 if len(version_data) < 4:
-                    self._vault_cache = {}
+                    self._vault_cache = {"version": VAULT_VERSION, "entries": {}}
                     return self._vault_cache
                 
                 version = struct.unpack('>I', version_data)[0]
-                # Allow both version 4 and 5
-                if version not in [4, 5]:
-                    self._vault_cache = {}
+                
+                # Handle old format (version 4/5) - treat as empty for migration
+                if version < VAULT_VERSION:
+                    print(f"⚠️ Old vault format detected (v{version}). Creating new vault.")
+                    self._vault_cache = {"version": VAULT_VERSION, "entries": {}}
                     return self._vault_cache
                 
-                result = {}
+                # Read new format
+                result = {"version": version, "entries": {}}
                 
-                while True:
-                    # Read notebook ID length
-                    id_len_data = f.read(4)
-                    if len(id_len_data) < 4:
+                # Read number of entries
+                num_entries_data = f.read(4)
+                if len(num_entries_data) < 4:
+                    self._vault_cache = result
+                    return self._vault_cache
+                num_entries = struct.unpack('>I', num_entries_data)[0]
+                
+                for _ in range(num_entries):
+                    # Read entry UUID
+                    uuid_len_data = f.read(4)
+                    if len(uuid_len_data) < 4:
                         break
-                    id_len = struct.unpack('>I', id_len_data)[0]
-                    
-                    # Read notebook ID string
-                    notebook_id_bytes = f.read(id_len)
-                    if len(notebook_id_bytes) < id_len:
+                    uuid_len = struct.unpack('>I', uuid_len_data)[0]
+                    uuid_bytes = f.read(uuid_len)
+                    if len(uuid_bytes) < uuid_len:
                         break
-                    notebook_id = notebook_id_bytes.decode('utf-8')
+                    entry_uuid = uuid_bytes.decode('utf-8')
                     
-                    # Read number of entries
-                    num_entries_data = f.read(4)
-                    if len(num_entries_data) < 4:
+                    # Read notebook_id
+                    nb_len_data = f.read(4)
+                    if len(nb_len_data) < 4:
                         break
-                    num_entries = struct.unpack('>I', num_entries_data)[0]
+                    nb_len = struct.unpack('>I', nb_len_data)[0]
+                    nb_bytes = f.read(nb_len)
+                    if len(nb_bytes) < nb_len:
+                        break
+                    notebook_id = nb_bytes.decode('utf-8')
                     
-                    entries = []
-                    for _ in range(num_entries):
-                        # Read timestamp (8 bytes)
-                        timestamp_data = f.read(8)
-                        if len(timestamp_data) < 8:
-                            break
-                        timestamp = struct.unpack('>Q', timestamp_data)[0]
-                        
-                        # Read nonce (12 bytes)
-                        nonce = f.read(12)
-                        if len(nonce) < 12:
-                            break
-                        
-                        # Read encrypted_keys length
-                        length_data = f.read(4)
-                        if len(length_data) < 4:
-                            break
-                        length = struct.unpack('>I', length_data)[0]
-                        
-                        # Read encrypted_keys
-                        encrypted_keys = f.read(length)
-                        if len(encrypted_keys) < length:
-                            break
-                        
-                        # Read active flag (1 byte)
-                        active_data = f.read(1)
-                        active = bool(active_data[0]) if active_data else False
-                        
-                        # Read created timestamp (8 bytes) - exists in version 4 and 5
-                        created_data = f.read(8)
-                        if len(created_data) == 8:
-                            created = struct.unpack('>Q', created_data)[0]
-                        else:
-                            created = timestamp
-                        
-                        # Read system_name (string length + data) - version 5 only
-                        system_name = "unknown (legacy)"
-                        if version >= 5:
-                            sysname_len_data = f.read(4)
-                            if len(sysname_len_data) == 4:
-                                sysname_len = struct.unpack('>I', sysname_len_data)[0]
-                                sysname_bytes = f.read(sysname_len)
-                                if len(sysname_bytes) == sysname_len:
-                                    system_name = sysname_bytes.decode('utf-8')
-                        
-                        entries.append({
-                            "timestamp": timestamp,
-                            "nonce": nonce,
-                            "encrypted_keys": encrypted_keys,
-                            "active": active,
-                            "created": created,
-                            "system_name": system_name
-                        })
+                    # Read timestamp
+                    ts_data = f.read(8)
+                    if len(ts_data) < 8:
+                        break
+                    timestamp = struct.unpack('>Q', ts_data)[0]
                     
-                    result[notebook_id] = entries
+                    # Read nonce
+                    nonce = f.read(12)
+                    if len(nonce) < 12:
+                        break
+                    
+                    # Read encrypted_keys length
+                    len_data = f.read(4)
+                    if len(len_data) < 4:
+                        break
+                    blob_len = struct.unpack('>I', len_data)[0]
+                    
+                    # Read encrypted_keys
+                    encrypted_keys = f.read(blob_len)
+                    if len(encrypted_keys) < blob_len:
+                        break
+                    
+                    result["entries"][entry_uuid] = {
+                        "notebook_id": notebook_id,
+                        "timestamp": timestamp,
+                        "nonce": nonce,
+                        "encrypted_keys": encrypted_keys
+                    }
                 
                 self._vault_cache = result
                 return self._vault_cache
                 
         except Exception as e:
             print(f"Error reading vault: {e}")
-            self._vault_cache = {}
+            self._vault_cache = {"version": VAULT_VERSION, "entries": {}}
             return self._vault_cache
     
-    def _write_vault(self, vault: Dict[str, List[Dict]]) -> None:
-        """Write entire binary vault file atomically"""
+    def _write_vault(self, vault: Dict) -> None:
+        """Write entire binary vault file - NEW FORMAT (version 2)"""
         temp_path = self.vault_path + '.tmp'
         
         try:
             with open(temp_path, 'wb') as f:
-                # Write version (bump to 5 for system_name support)
-                f.write(struct.pack('>I', 5))
+                # Write version
+                f.write(struct.pack('>I', VAULT_VERSION))
                 
-                for notebook_id, entries in vault.items():
-                    # Write notebook ID length and string
-                    id_bytes = notebook_id.encode('utf-8')
-                    f.write(struct.pack('>I', len(id_bytes)))
-                    f.write(id_bytes)
+                entries = vault.get("entries", {})
+                # Write number of entries
+                f.write(struct.pack('>I', len(entries)))
+                
+                for entry_uuid, entry_data in entries.items():
+                    # Write entry UUID
+                    uuid_bytes = entry_uuid.encode('utf-8')
+                    f.write(struct.pack('>I', len(uuid_bytes)))
+                    f.write(uuid_bytes)
                     
-                    # Write number of entries
-                    f.write(struct.pack('>I', len(entries)))
+                    # Write notebook_id
+                    nb_bytes = entry_data["notebook_id"].encode('utf-8')
+                    f.write(struct.pack('>I', len(nb_bytes)))
+                    f.write(nb_bytes)
                     
-                    for entry in entries:
-                        # Write timestamp (8 bytes)
-                        f.write(struct.pack('>Q', entry["timestamp"]))
-                        
-                        # Write nonce (12 bytes)
-                        f.write(entry["nonce"])
-                        
-                        # Write encrypted_keys length
-                        f.write(struct.pack('>I', len(entry["encrypted_keys"])))
-                        
-                        # Write encrypted_keys
-                        f.write(entry["encrypted_keys"])
-                        
-                        # Write active flag (1 byte)
-                        f.write(struct.pack('>B', 1 if entry.get("active") else 0))
-                        
-                        # Write created timestamp (8 bytes)
-                        f.write(struct.pack('>Q', entry.get("created", entry["timestamp"])))
-                        
-                        # Write system_name
-                        sysname = entry.get("system_name", "unknown").encode('utf-8')
-                        f.write(struct.pack('>I', len(sysname)))
-                        f.write(sysname)
+                    # Write timestamp
+                    f.write(struct.pack('>Q', entry_data["timestamp"]))
+                    
+                    # Write nonce
+                    f.write(entry_data["nonce"])
+                    
+                    # Write encrypted_keys length and data
+                    encrypted_keys = entry_data["encrypted_keys"]
+                    f.write(struct.pack('>I', len(encrypted_keys)))
+                    f.write(encrypted_keys)
             
-            # Atomic rename
             os.rename(temp_path, self.vault_path)
             self._vault_cache = vault
             
@@ -627,6 +564,11 @@ class SecureSessionStorage:
             if os.path.exists(temp_path):
                 os.unlink(temp_path)
             raise
+    
+    def get_entry(self, entry_uuid: str) -> Optional[Dict]:
+        """Get a single entry by UUID"""
+        vault = self._read_vault()
+        return vault.get("entries", {}).get(entry_uuid)
     
     def list_entries(self, notebook_id: str) -> List[Dict]:
         """List all entries for a notebook (for trusted devices UI)"""
@@ -643,26 +585,11 @@ class SecureSessionStorage:
             })
         return result
 
-    def remove_entry(self, notebook_id: str, timestamp: int) -> bool:
-        """Remove a specific entry by timestamp (revoke trusted device)"""
-        try:
-            vault = self._read_vault()
-            if notebook_id not in vault:
-                return False
-            
-            entries = vault[notebook_id]
-            # Filter out the entry with matching timestamp
-            new_entries = [e for e in entries if e.get("timestamp") != timestamp]
-            
-            if len(new_entries) == len(entries):
-                return False  # No entry removed
-            
-            if new_entries:
-                vault[notebook_id] = new_entries
-            else:
-                del vault[notebook_id]
-            
+    def remove_entry(self, entry_uuid: str) -> bool:
+        """Remove an entry by UUID"""
+        vault = self._read_vault()
+        if "entries" in vault and entry_uuid in vault["entries"]:
+            del vault["entries"][entry_uuid]
             self._write_vault(vault)
             return True
-        except Exception:
-            return False
+        return False

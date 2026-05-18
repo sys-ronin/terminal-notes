@@ -1,57 +1,62 @@
+# Secure Session Storage: Zero‑Trust, Portable Key Cache (Current Implementation)
 
-# Secure Session Storage: A Zero‑Trust, Portable Key Cache
+## Scope
 
-## What This Document Describes
+This document describes the secure session storage system as implemented in the provided codebase (files: `secure_session.py`, `vault_manager.py`, `terminal_notes_core.py`, `session_key_vault.py`, `change_notebook.py`). It focuses on how cryptographic keys are cached across application restarts, how per‑machine entries are stored, and how the live cache (`SessionKeyVault`) acts as a proxy to the binary vault.
 
-This document describes the secure session storage system implemented in `secure_session.py`. The system caches cryptographic keys across application restarts without storing any long‑lived secrets. It is designed for a local‑first, offline‑first application where the user owns the data and controls the keys.
-
-The session storage is a binary vault file (`session.vault`) that contains encrypted entries for each notebook. Each entry stores the derived password key (`Kp`) and phrase key (`Ks`) for a specific machine. The vault is portable, but each machine can only decrypt its own entries because the encryption key is derived from the machine's hardware fingerprint **at runtime** – the fingerprint is never stored.
-
-This document describes the implementation as it exists in the code. No comparison with other systems is made.
+No comparisons with other systems are made. The description is aligned with the actual code.
 
 ---
 
-## The Problem
+## Problem Restatement
 
-An encrypted notebook requires two keys:
+An encrypted notebook uses two derived keys:
 
-- **`Kp`** – derived from the user's password (`SHA256(password + b':' + folder_name)`). This key is used for daily authentication.
-- **`Ks`** – derived from the user's recovery phrase (`SHA256(phrase + b':' + folder_name)`). This key never changes and is the actual encryption key for the notebook content.
+- **`Kp`** = `SHA256(password + b':' + folder_name)` – used for daily authentication.
+- **`Ks`** = `SHA256(phrase + b':' + folder_name)` – used for actual content encryption.
 
-Entering the recovery phrase on every application start is inconvenient. The user wants to unlock the notebook with only their password after the first unlock on a given machine.
-
-However, the system cannot store `Ks` in plain text. It cannot store `Kp` in plain text. It cannot rely on a cloud service. The user may use the same notebook on multiple machines, and the session cache must be portable but also machine‑bound to prevent key extraction.
+The user wants to unlock the notebook with only their password after the first unlock on a given machine. The system must not store `Ks` or `Kp` in plain text, cannot rely on a cloud service, and must be portable yet machine‑bound.
 
 ---
 
-## The Solution: A Binary Vault with Per‑Machine Entries
+## Architecture Overview
 
-The system stores a binary file named `session.vault` in the application's configuration directory. The file has the following structure (as implemented in `_read_vault()` and `_write_vault()`):
+The system consists of three layers:
+
+1. **Binary Vault File** (`.vault`) – stores encrypted entries, each containing `Kp` and `Ks` for a specific notebook and a specific machine. The vault file is managed by `VaultManager`.
+2. **Master Registry** (`notebooks_registry.json`) – stores per‑system metadata: which vault file contains the entry, the entry UUID, and the lock state (`locked` flag).
+3. **In‑Memory Proxy Cache** (`SessionKeyVault`) – a dictionary‑like object that holds **only unlocked** keys in RAM. It reads from the vault on demand and writes back when keys are updated.
+
+This design separates the persistent encrypted storage (vault) from the live cache, and adds a master registry to support multiple vaults (e.g., default on internal drive, custom on USB).
+
+---
+
+## The Binary Vault File (Version 2)
+
+The vault file (e.g., `session.vault`) uses a custom binary format implemented in `VaultManager.read_vault_file()` and `write_vault_file()`. The structure is:
 
 ```
-[4 bytes] version (4)
-For each notebook (notebook_id as UTF‑8 string):
+[4 bytes] version = 2
+[4 bytes] number_of_entries (N)
+For each entry (1..N):
+    [4 bytes] entry_uuid_length
+    [variable] entry_uuid (UTF‑8 string, e.g., "550e8400‑e29b‑41d4‑a716‑446655440000")
     [4 bytes] notebook_id_length
-    [variable] notebook_id (UTF‑8, plain text – used as lookup key)
-    [4 bytes] number_of_entries
-    For each entry:
-        [8 bytes] timestamp (Unix nanoseconds)
-        [12 bytes] nonce
-        [4 bytes] encrypted_keys_length
-        [variable] encrypted_keys (AES‑256‑GCM ciphertext)
-        [1 byte] active_flag (1 if active, 0 otherwise)
-        [8 bytes] created_timestamp (Unix nanoseconds)
+    [variable] notebook_id (UTF‑8 string, plain text – not secret, used for lookup)
+    [8 bytes] timestamp (Unix nanoseconds)
+    [4 bytes] nonce_length (always 12)
+    [12 bytes] nonce
+    [4 bytes] encrypted_keys_length
+    [variable] encrypted_keys (AES‑256‑GCM ciphertext of combined keys)
 ```
 
-The file is a binary format, not JSON. There is no outer encryption. The security comes from the encryption of each individual entry, not from obscuring the file structure.
-
-The `notebook_id` is stored as a plain text UTF‑8 string to allow direct lookup. This is not a secret; it is the identifier used to find the correct entry list.
+The file is **not** encrypted as a whole. Each entry is individually encrypted. The notebook_id is stored in plain text to allow fast locating of entries belonging to a notebook. The entry UUID is a unique identifier used by the master registry to reference this entry.
 
 ---
 
 ## Entry Encryption
 
-Each entry stores the encrypted concatenation of `Kp` (32 bytes) and `Ks` (32 bytes). The encryption key for the entry is derived as:
+Each entry stores the concatenation of `Kp` (32 bytes) and `Ks` (32 bytes), encrypted with AES‑256‑GCM. The encryption key is derived at runtime:
 
 ```python
 encryption_key = SHA256(str(timestamp) + fingerprint)
@@ -59,146 +64,181 @@ encryption_key = SHA256(str(timestamp) + fingerprint)
 
 Where:
 
-- `timestamp` is a Unix nanosecond timestamp stored in the entry header.
-- `fingerprint` is a 32‑byte value derived from hardware identifiers (machine‑id, product UUID, hostname, etc.) at runtime. The fingerprint is **never stored** anywhere.
+- `timestamp` is the Unix nanosecond timestamp stored in the entry header.
+- `fingerprint` is a 32‑byte value derived from hardware identifiers (machine‑id, product UUID, hostname, etc.) in `SecureSessionStorage._generate_system_fingerprint()`. The fingerprint is **never stored** on disk; it is recomputed on every application start.
 
-The encryption uses AES‑256‑GCM:
+The nonce is random (12 bytes) and stored in the entry header.
 
-- A random 12‑byte nonce is generated per entry.
-- The ciphertext includes the encrypted `Kp` and `Ks` and a 16‑byte authentication tag.
-- The nonce is stored in the entry header.
+Decryption requires the correct `timestamp` and the current machine's fingerprint. If either is wrong, decryption fails (raises `InvalidTag`).
 
-Decryption requires the correct `timestamp` and the current machine's fingerprint. If either is wrong, decryption fails with an `InvalidTag` exception.
+---
 
-```python
-# From _derive_entry_key()
-key_material = str(timestamp).encode() + fingerprint
-return hashlib.sha256(key_material).digest()
+## Master Registry (`notebooks_registry.json`)
+
+The master registry (managed by `NoteManager.load_registry()`) stores per‑notebook, per‑system entries. Its structure (simplified):
+
+```json
+{
+  "version": 2,
+  "system_index": { "fp_hash": "system_name" },
+  "notebooks": {
+    "notebook_id": {
+      "name": "My Notebook",
+      "systems": {
+        "fp_hash": {
+          "path": "relative/path/to/folder",
+          "vault": "default",
+          "entry": "550e8400-...",
+          "locked": false,
+          "system_name": "hostname"
+        }
+      }
+    }
+  }
+}
 ```
 
----
+- `fingerprint_hash` (`fp_hash`) is `SHA256(fingerprint + system_name)[:16]` – a short identifier for the current system.
+- `vault` is the name of the vault file (e.g., `"default"` or `"vault_abc123"`).
+- `entry` is the UUID of the entry inside that vault.
+- `locked` indicates whether the notebook is locked on this system (`true` means the keys are not cached in RAM; the user must unlock).
 
-## The Active Flag
-
-Each entry has a single‑byte `active_flag` (1 for active, 0 for inactive). When the system unlocks a notebook on a machine, the `get_keys()` method:
-
-1. Retrieves all entries for the given `notebook_id`.
-2. First, tries to find an entry where `active_flag == 1`. If found, it attempts decryption.
-3. If decryption succeeds, it returns the recovered `Kp` and `Ks`.
-4. If decryption fails (e.g., because the fingerprint changed), it sets `active_flag = 0` for that entry, writes the vault back to disk, and falls back to trying all entries.
-
-When a new entry is created (first unlock on a machine, or after a password change), it is added with `active_flag = 1`, and any previously active entry for that notebook is set to `active_flag = 0`.
-
-This design allows O(1) lookup in the common case (active flag set and correct) while falling back to O(n) trial decryption when the fingerprint changes (e.g., after an OS reinstall or on a new machine).
+When the user unlocks a notebook on a system, the master registry is updated with `locked: false` and the entry UUID is stored. When the user locks it, `locked: true` is set, but the vault entry remains.
 
 ---
 
-## Adding a New Machine
+## Live Proxy Cache: `SessionKeyVault`
 
-When the user opens a notebook on a machine that has no active entry (or no entry at all), the system calls `get_keys_with_verification()`, which eventually calls `_recover_with_phrase()`:
+`SessionKeyVault` (in `session_key_vault.py`) is a dictionary‑like object that serves as an in‑memory cache for **unlocked** crypto keys. Its behaviour:
 
-1. Prompts the user for the **recovery phrase** (not the password).
-2. Derives `Ks` from the phrase and the folder name.
-3. Uses `Ks` to decrypt `.tn_recovery` and retrieve `Kp`.
-4. Verifies both keys by decrypting `.tn_password` with `SHA256(Kp + Ks)`.
-5. Calls `store_keys()` to create a new entry in `session.vault` with a fresh `timestamp`, a new `nonce`, and `encrypted_keys` set to AES‑GCM of `Kp` and `Ks` using `SHA256(timestamp + fingerprint)`.
-6. The new entry is added with `active_flag = 1`. Any existing entry for this notebook is left unchanged (its `active_flag` remains whatever it was).
+- **`__getitem__(notebook_id)`** :  
+  - First checks the internal `_cache` dict.  
+  - If not cached, it calls `NoteManager._get_crypto_from_vault(notebook_id)`, which reads the master registry to locate the vault and entry UUID, decrypts the entry using the current fingerprint, and returns the `Crypto` object.  
+  - The result is stored in `_cache` for future access.
 
-The recovery phrase is never stored. The new entry caches the derived keys for future unlocks.
+- **`__setitem__(notebook_id, crypto)`** :  
+  - Stores the `crypto` in `_cache`.  
+  - Also writes the keys back to the vault (calls `NoteManager._write_crypto_to_vault()`). This updates the entry for the current system with the same UUID, preserving it for other systems.
+
+- **`lock(notebook_id)`** :  
+  - Removes the entry from `_cache` (RAM).  
+  - Does **not** delete the vault entry; the keys remain in the vault for future unlocks.
+
+- **`unlock(notebook_id, crypto)`** :  
+  - Adds the `crypto` to `_cache` (does not write to vault again unless the keys changed).
+
+Thus, `SessionKeyVault` acts as a **proxy** that lazily loads keys from the vault and caches them only while the notebook is unlocked.
+
+---
+
+## First‑Time Unlock on a New Machine
+
+When a notebook is opened on a machine that has no entry in the master registry for that system, the user is prompted for the **recovery phrase** (implemented in `SecureSessionStorage._recover_with_phrase()`):
+
+1. User enters the 12‑word recovery phrase.
+2. `Ks` is derived from the phrase and folder name.
+3. The system decrypts `.tn_recovery` (encrypted with `Ks`) to obtain `Kp`.
+4. Both keys are verified using `.tn_password` (encrypted with `SHA256(Kp + Ks)`).
+5. A new entry is created in the **default vault** (or a specified vault):
+   - A new UUID is generated.
+   - The current `timestamp` and a fresh nonce are used.
+   - The combined `Kp + Ks` is encrypted with `SHA256(timestamp + fingerprint)`.
+   - The entry is added to the vault file.
+6. The master registry is updated with the new system entry (`locked: false`, `vault: "default"`, `entry: <uuid>`).
+7. The `Crypto` object is stored in `SessionKeyVault._cache`.
+
+Future unlocks on the same machine will use the normal password flow.
 
 ---
 
 ## Normal Unlock (Machine Already Trusted)
 
-When the user opens a notebook on a machine that already has an active entry, the system calls `get_keys_with_verification()`:
+When a notebook is opened on a machine that already has a system entry in the master registry with `locked: false`, the process is:
 
-1. `get_keys()` finds the active entry and decrypts it to obtain `Kp` and `Ks`.
-2. The system then prompts the user for their **password** (not the phrase).
-3. It derives `Kp_entered` from the entered password and the folder name.
-4. If `Kp_entered == Kp`, the password is correct.
-5. It then verifies `.tn_password` using `SHA256(Kp + Ks)` as a two‑factor check.
-6. If all checks pass, the notebook unlocks.
+1. `SessionKeyVault[notebook_id]` is accessed.
+2. `NoteManager._get_crypto_from_vault()` reads the master registry to obtain the vault name and entry UUID.
+3. The vault file is read, and the entry is decrypted using the current fingerprint (the `timestamp` is known from the entry header).
+4. The decrypted `Kp` and `Ks` are used to create a `Crypto` object.
+5. The user is prompted for their **password** (not the phrase). `Kp_entered` is derived and compared with the decrypted `Kp`.
+6. `.tn_password` is verified as a two‑factor check.
+7. If successful, the `Crypto` is placed in `SessionKeyVault._cache` and the notebook unlocks.
 
-The phrase is never required after the first unlock on a given machine.
-
----
-
-## Changing the Password
-
-When the user changes the password on a trusted machine (via `_change_password_with_old()` or `_change_password_with_phrase()`), the system:
-
-1. Locates the active entry for that notebook (via `get_keys()`, which returns `Kp_old` and `Ks`).
-2. Verifies the old password (if using the old password method) or uses the phrase to decrypt `.tn_recovery`.
-3. Derives `Kp_new` from the new password and the folder name.
-4. Calls `store_keys()` which:
-   - Reads the existing vault.
-   - **Removes any existing active entry** (by filtering out entries with `active_flag == 1`).
-   - Creates a **new entry** with a fresh `timestamp`, a new `nonce`, and `encrypted_keys` set to AES‑GCM of `Kp_new` and `Ks` using `SHA256(timestamp + fingerprint)`.
-   - Sets `active_flag = 1` for the new entry.
-   - Appends the new entry to the list (the old inactive entries remain).
-5. Updates `.tn_recovery` and `.tn_password` on disk.
-
-**Important:** The old entry for this machine becomes inactive but remains in the vault. Each machine has at most **one active entry** at any time. Other machines that have their own entries will continue to use their cached `Kp` (which is now stale). When they next unlock, they will detect the mismatch and prompt for the recovery phrase to create a new entry.
+No recovery phrase is required.
 
 ---
 
-## Machine Fingerprint Derivation
+## Password Change
 
-The machine fingerprint is derived at runtime using available hardware identifiers (implemented in `_generate_system_fingerprint()`):
+When the user changes the password on a trusted machine (via `ChangeNotebookHandler._change_password_with_old()` or `_change_password_with_phrase()`):
 
-- **Linux**: `/etc/machine-id`, product UUID from `/sys/class/dmi/id/product_uuid`, CPU info.
-- **macOS**: `IOPlatformUUID` from `ioreg`, hardware serial number.
-- **Windows**: `MachineGUID` from the registry, ComputerName.
+1. The old `Kp` and `Ks` are obtained (using the normal unlock flow).
+2. The new password is used to derive `Kp_new`.
+3. The system calls `NoteManager._write_crypto_to_vault(notebook_id, new_crypto)`, which:
+   - Looks up the existing entry UUID from the master registry.
+   - Re‑encrypts the combined keys (`Kp_new + Ks`) with a **new timestamp** and a new nonce.
+   - Overwrites the entry in the vault (the same UUID is used, but the ciphertext and nonce change).
+4. The `.tn_recovery` and `.tn_password` files are updated on disk.
+5. The notebook is then locked (the user must re‑unlock with the new password).
 
-Additional components include:
-- `platform.node()` (hostname)
-- `platform.processor()`
-- `os.getuid()` (user ID)
-- `platform.system()` and `platform.release()`
-
-The components are concatenated and hashed with SHA256. The fingerprint is **never stored on disk**. It is recomputed on every application start. If the hardware identifiers change (e.g., after a motherboard replacement), the fingerprint will change, and the existing vault entries will become undecryptable. The user must re‑enter the recovery phrase to create new entries.
-
-This design ensures that the cached keys cannot be extracted from the vault file and used on a different machine.
+Other machines that have their own entries will still have the old `Kp` cached. When they next unlock, the password check will fail because `Kp_entered` will not match the decrypted `Kp`. The system will fall back to the recovery phrase flow, create a new entry for that machine, and update its master registry entry.
 
 ---
 
-## Security Properties
+## Trusted Devices View
 
-- **No long‑lived secrets are stored.** The vault stores only encrypted keys. The encryption key is derived at runtime from the machine fingerprint.
-- **The recovery phrase is never stored.** It is used only to create the first entry on a new machine.
-- **The vault is portable but machine‑bound.** Copying `session.vault` to another machine does not allow decryption because the fingerprint will be different.
-- **Tamper‑evident.** Any change to an entry's `timestamp`, `nonce`, or `encrypted_keys` will cause decryption to fail with an `InvalidTag` error.
-- **O(1) unlock in the common case.** The active flag allows direct lookup without trial decryption.
-- **Password changes are instant and do not require re‑encryption.** Only the vault entry for the current machine is updated; other machines update lazily when they next unlock.
+The `ChangeNotebookHandler._show_trusted_devices()` method lists all machines that have an entry for a given notebook. It does this by:
 
----
+- Scanning the master registry for the notebook.
+- For each system fingerprint hash, reading the corresponding vault and entry UUID.
+- Decrypting the entry (requires the current machine's fingerprint – but the entry's metadata, such as `timestamp`, can be read without decryption). The system name is stored in the master registry, so it can be displayed even without decrypting the entry.
 
-## Code References
-
-| Method | Purpose |
-|--------|---------|
-| `_get_system_fingerprint()` | Derives the machine fingerprint from hardware identifiers at runtime. Never stores it. |
-| `_derive_entry_key(timestamp, fingerprint)` | Derives the encryption key for a vault entry. |
-| `_read_vault()` | Reads the binary `session.vault` file and returns a dictionary. |
-| `_write_vault(vault)` | Writes the dictionary back to the binary file atomically. |
-| `store_keys(notebook_id, password_key, phrase_key)` | Creates a new active entry (replaces the old one). |
-| `get_keys(notebook_id)` | Retrieves the active entry's keys (if fingerprint matches). |
-| `get_keys_with_verification(notebook_id, folder_path, folder_name)` | Handles the full unlock flow: normal unlock, first‑time setup, and password‑changed detection. |
-| `_recover_with_phrase(notebook_id, folder_path, folder_name)` | Recovers `Kp` and `Ks` from the recovery phrase and creates a new vault entry. |
+The user can remove a trusted device, which:
+- Deletes the entry from the vault.
+- Removes the system entry from the master registry.
+- If the current machine is removed, the notebook is immediately locked.
 
 ---
 
-## Limitations
+## Code References (Current Implementation)
 
-- **Machine fingerprint changes break the cache.** If the fingerprint changes (new hardware, OS reinstall), all entries become undecryptable. The user must re‑enter the recovery phrase to create new entries.
-- **No remote sync.** The vault is a local file. Users who want to share the cache across machines must copy the file manually.
-- **Binary format is not human‑readable.** The vault is not designed for manual inspection.
+| Component | File | Key Methods |
+|-----------|------|--------------|
+| Binary vault I/O | `vault_manager.py` | `read_vault_file()`, `write_vault_file()`, `add_entry_to_vault()`, `get_entry_from_vault()`, `remove_entry_from_vault()` |
+| Vault registry | `vault_manager.py` | `load_vault_registry()`, `get_vault_path()`, `set_vault_path()` |
+| Master registry | `terminal_notes_core.py` | `load_registry()`, `save_registry()`, `_get_current_system_entry()`, `_update_system_entry()` |
+| Live proxy cache | `session_key_vault.py` | `__getitem__`, `__setitem__`, `lock()`, `unlock()`, `clear_cache()` |
+| Fingerprint derivation | `secure_session.py` | `_get_system_fingerprint()`, `_generate_system_fingerprint()` |
+| Recovery phrase flow | `secure_session.py` | `_recover_with_phrase()`, `get_keys_with_verification()` |
+| Unlock flow | `terminal_notes_core.py` | `get_crypto()`, `_get_crypto_from_vault()`, `_write_crypto_to_vault()` |
+| Password change | `change_notebook.py` | `_change_password_with_old()`, `_change_password_with_phrase()` |
+| Trusted devices | `change_notebook.py` | `_show_trusted_devices()` |
+
+---
+
+## Security Properties (Current)
+
+- **No long‑lived secrets stored** – only encrypted keys in vault files. The encryption key is derived at runtime from hardware fingerprint.
+- **Recovery phrase never stored** – used only to create the first entry on a new machine.
+- **Portable but machine‑bound** – copying a vault file to another machine does not allow decryption because the fingerprint differs.
+- **Tamper‑evident** – any change to an entry's ciphertext, nonce, or timestamp causes decryption to fail.
+- **O(1) unlock** – the master registry stores the exact vault and entry UUID for the current system; no trial decryption needed.
+- **Lazy cache invalidation** – `SessionKeyVault` caches only unlocked keys; locking removes from RAM but keeps vault entry.
+- **Multi‑vault support** – different notebooks can use different vaults (e.g., default on internal drive, custom on USB). The master registry tracks which vault each system uses.
+
+---
+
+## Limitations (Current)
+
+- **Hardware fingerprint changes break the cache** – after a motherboard replacement or OS reinstall, all entries become undecryptable. User must re‑enter recovery phrase to create new entries.
+- **No remote sync** – vault files are local; users must copy them manually if they want to share the cache.
+- **Binary format not human‑readable** – designed for machine use only.
+- **Password change on one machine does not automatically update other machines** – they will detect a mismatch and fall back to recovery phrase.
 
 ---
 
 ## Prior Art Assertion
 
-The concepts described in this document – including but not limited to the binary vault format, per‑machine entries with timestamps, active flag for O(1) lookup, key derivation from runtime hardware fingerprint, and the separation of key storage from key derivation – were made public in timestamped GitHub repositories and prior art disclosures starting in February 2026.
+The concepts described in this document – including but not limited to: per‑machine binary vault entries referenced by UUID, master registry mapping system fingerprints to entry UUIDs, in‑memory proxy cache (`SessionKeyVault`) backed by vault files, key derivation from runtime hardware fingerprint, and the separation of key storage from key derivation – were made public in timestamped GitHub repositories and prior art disclosures starting in February 2026.
 
 These concepts constitute prior art under 35 U.S.C. § 102(a)(1) and Article 54(2) EPC. No party may obtain valid patent claims covering any of these concepts.
 
@@ -208,8 +248,4 @@ The system is released under the **Eternal License**, which explicitly prohibits
 
 ## Conclusion
 
-The secure session storage system is a zero‑trust, portable, machine‑bound key cache. It stores encrypted entries for each notebook, one per trusted machine. The encryption key is derived at runtime from the machine's hardware fingerprint, which is never stored. The active flag enables O(1) lookup. The vault is portable but cannot be decrypted on a different machine.
-
-This design balances security, portability, and convenience. It allows the user to unlock notebooks with only a password after the first unlock on a given machine, while ensuring that the recovery phrase is never stored and that keys cannot be extracted from the vault file.
-
-```
+The current secure session storage system is a zero‑trust, portable, machine‑bound key cache that uses a binary vault for persistent storage, a master registry for metadata, and an in‑memory proxy cache for unlocked keys. It balances security, portability, and convenience, allowing password‑only unlocks on trusted machines after an initial recovery phrase setup.
