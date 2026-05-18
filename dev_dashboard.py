@@ -2981,8 +2981,8 @@ class ProjectGitManager:
             remote_branch_exists = True
             print("  Remote branch exists")
             
-            # Fetch the remote branch
-            fetch_cmd = ["git", "fetch", auth_url, info['current_branch'], "--quiet"]
+            # Fetch the remote branch and create local tracking ref
+            fetch_cmd = ["git", "fetch", auth_url, f"{info['current_branch']}:refs/remotes/origin/{info['current_branch']}", "--quiet"]
             fetch_result = subprocess.run(
                 fetch_cmd,
                 cwd=self.project_dir,
@@ -2994,14 +2994,34 @@ class ProjectGitManager:
             
             if fetch_result.returncode == 0:
                 print("  Remote status fetched successfully")
-                # Count commits ahead using remote tracking branch
-                ahead_result = self.run_git_command(f"git rev-list --count origin/{info['current_branch']}..HEAD")
+                # Count commits ahead using the fetched remote ref
+                ahead_result = self.run_git_command(f"git rev-list --count HEAD..refs/remotes/origin/{info['current_branch']}")
                 if ahead_result['success'] and ahead_result['stdout'].strip():
                     commits_ahead = int(ahead_result['stdout'].strip())
+                    print(f"  Commits behind remote: {commits_ahead}")
                 else:
                     commits_ahead = 0
+                
+                # Also check commits ahead (local commits not on remote)
+                local_ahead_result = self.run_git_command(f"git rev-list --count refs/remotes/origin/{info['current_branch']}..HEAD")
+                if local_ahead_result['success'] and local_ahead_result['stdout'].strip():
+                    local_ahead = int(local_ahead_result['stdout'].strip())
+                    if local_ahead > 0:
+                        print(f"  Local commits not on remote: {local_ahead}")
+                        commits_ahead = local_ahead
             else:
-                commits_ahead = info['ahead']
+                # Fetch failed, use git status
+                status_result = self.run_git_command(f"git status -sb")
+                if status_result['success'] and status_result['stdout']:
+                    import re
+                    ahead_match = re.search(r'ahead[^\d]*(\d+)', status_result['stdout'])
+                    if ahead_match:
+                        commits_ahead = int(ahead_match.group(1))
+                        print(f"  Git status shows {commits_ahead} commit(s) ahead")
+                    else:
+                        commits_ahead = 0
+                else:
+                    commits_ahead = 0
         else:
             # Remote branch doesn't exist - this is a first push
             print("  Remote branch does not exist - first push")
@@ -3019,10 +3039,14 @@ class ProjectGitManager:
 
         if has_commits:
             print(f"Commits to push: {commits_ahead}")
-            # Show recent commits
-            log_result = self.run_git_command(f"git log --oneline -{min(5, commits_ahead)}")
+            # Show recent commits that need to be pushed
+            if remote_branch_exists:
+                log_result = self.run_git_command(f"git log --oneline refs/remotes/origin/{info['current_branch']}..HEAD -{min(5, commits_ahead)}")
+            else:
+                log_result = self.run_git_command(f"git log --oneline -{min(5, commits_ahead)}")
+            
             if log_result['success'] and log_result['stdout']:
-                print("\nRecent commits:")
+                print("\nCommits to push:")
                 for line in log_result['stdout'].strip().split('\n')[:5]:
                     print(f"  {line[:80]}")
         else:
