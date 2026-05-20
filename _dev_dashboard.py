@@ -2957,6 +2957,7 @@ class ProjectGitManager:
         print("\nChecking commits...")
 
         import subprocess
+        import re
 
         # Define env for all git operations
         env = os.environ.copy()
@@ -2967,6 +2968,8 @@ class ProjectGitManager:
 
         # First, check if remote branch exists
         remote_branch_exists = False
+        remote_commit_hash = None
+
         check_remote_cmd = ["git", "ls-remote", "--heads", auth_url, info['current_branch']]
         check_result = subprocess.run(
             check_remote_cmd,
@@ -2979,69 +2982,92 @@ class ProjectGitManager:
 
         if check_result.returncode == 0 and check_result.stdout.strip():
             remote_branch_exists = True
-            print("  Remote branch exists")
+            # Extract the remote commit hash from ls-remote output
+            remote_commit_hash = check_result.stdout.strip().split()[0]
+            print(f"  Remote branch exists at commit: {remote_commit_hash[:8]}")
             
-            # Fetch the remote branch and create local tracking ref
-            fetch_cmd = ["git", "fetch", auth_url, f"{info['current_branch']}:refs/remotes/origin/{info['current_branch']}", "--quiet"]
-            fetch_result = subprocess.run(
-                fetch_cmd,
-                cwd=self.project_dir,
-                env=env,
-                capture_output=True,
-                text=True,
-                timeout=30
-            )
+            # Get local commit hash
+            local_hash_result = self.run_git_command(f"git rev-parse {info['current_branch']}")
+            local_commit_hash = local_hash_result['stdout'].strip() if local_hash_result['success'] else ""
             
-            if fetch_result.returncode == 0:
-                print("  Remote status fetched successfully")
-                # Count commits ahead using the fetched remote ref
-                ahead_result = self.run_git_command(f"git rev-list --count HEAD..refs/remotes/origin/{info['current_branch']}")
-                if ahead_result['success'] and ahead_result['stdout'].strip():
-                    commits_ahead = int(ahead_result['stdout'].strip())
-                    print(f"  Commits behind remote: {commits_ahead}")
-                else:
-                    commits_ahead = 0
+            if local_commit_hash:
+                print(f"  Local branch at commit: {local_commit_hash[:8]}")
                 
-                # Also check commits ahead (local commits not on remote)
-                local_ahead_result = self.run_git_command(f"git rev-list --count refs/remotes/origin/{info['current_branch']}..HEAD")
-                if local_ahead_result['success'] and local_ahead_result['stdout'].strip():
-                    local_ahead = int(local_ahead_result['stdout'].strip())
-                    if local_ahead > 0:
-                        print(f"  Local commits not on remote: {local_ahead}")
-                        commits_ahead = local_ahead
-            else:
-                # Fetch failed, use git status
-                status_result = self.run_git_command(f"git status -sb")
-                if status_result['success'] and status_result['stdout']:
-                    import re
-                    ahead_match = re.search(r'ahead[^\d]*(\d+)', status_result['stdout'])
-                    if ahead_match:
-                        commits_ahead = int(ahead_match.group(1))
-                        print(f"  Git status shows {commits_ahead} commit(s) ahead")
-                    else:
-                        commits_ahead = 0
-                else:
+                if remote_commit_hash == local_commit_hash:
                     commits_ahead = 0
+                    print("  Local and remote are in sync")
+                else:
+                    # Try to find merge base
+                    merge_base_result = self.run_git_command(f"git merge-base {info['current_branch']} {remote_commit_hash} 2>/dev/null")
+                    if merge_base_result['success'] and merge_base_result['stdout'].strip():
+                        merge_base = merge_base_result['stdout'].strip()
+                        # Count commits from merge base to local HEAD
+                        ahead_result = self.run_git_command(f"git rev-list --count {merge_base}..{info['current_branch']}")
+                        if ahead_result['success'] and ahead_result['stdout'].strip():
+                            commits_ahead = int(ahead_result['stdout'].strip())
+                            print(f"  Local commits ahead of remote: {commits_ahead}")
+                        else:
+                            commits_ahead = 0
+                    else:
+                        # No common ancestor - check if remote has any commits
+                        # Get total commits in remote
+                        remote_total_result = self.run_git_command(f"git rev-list --count {remote_commit_hash}")
+                        remote_total = int(remote_total_result['stdout'].strip()) if remote_total_result['success'] and remote_total_result['stdout'].strip() else 0
+                        
+                        if remote_total == 0:
+                            # Remote has no commits - first real push
+                            total_result = self.run_git_command(f"git rev-list --count HEAD")
+                            if total_result['success'] and total_result['stdout'].strip():
+                                commits_ahead = int(total_result['stdout'].strip())
+                                print(f"  Remote has no commits, pushing all: {commits_ahead}")
+                            else:
+                                commits_ahead = 0
+                        else:
+                            # Different histories - count local commits not in remote
+                            # Use git log with --not to exclude remote commits
+                            not_in_remote = self.run_git_command(f"git rev-list --count HEAD --not {remote_commit_hash}")
+                            if not_in_remote['success'] and not_in_remote['stdout'].strip():
+                                commits_ahead = int(not_in_remote['stdout'].strip())
+                                print(f"  Local commits not in remote: {commits_ahead}")
+                            else:
+                                # Fallback to asking user
+                                print("  Branches have diverged with no common ancestor")
+                                print("  This may happen if repositories have different histories")
+                                choice = self.get_input("  Force push all local commits? [y/N]: ")
+                                if choice.lower() == 'y':
+                                    total_result = self.run_git_command(f"git rev-list --count HEAD")
+                                    commits_ahead = int(total_result['stdout'].strip()) if total_result['success'] and total_result['stdout'].strip() else 0
+                                else:
+                                    commits_ahead = 0
         else:
             # Remote branch doesn't exist - this is a first push
             print("  Remote branch does not exist - first push")
-            # Count all commits as they need to be pushed
             total_commits_result = self.run_git_command("git rev-list --count HEAD")
             if total_commits_result['success'] and total_commits_result['stdout'].strip():
                 commits_ahead = int(total_commits_result['stdout'].strip())
+                print(f"  First push: {commits_ahead} commit(s) to push")
             else:
                 commits_ahead = info['ahead']
-            
-            if commits_ahead == 0 and info['ahead'] > 0:
-                commits_ahead = info['ahead']
+
+        # Double-check with git status for accuracy
+        if commits_ahead == 0:
+            status_result = self.run_git_command(f"git status -sb")
+            if status_result['success'] and status_result['stdout']:
+                # Look for "ahead X" pattern
+                ahead_match = re.search(r'ahead[^\d]*(\d+)', status_result['stdout'])
+                if ahead_match:
+                    status_ahead = int(ahead_match.group(1))
+                    if status_ahead > 0:
+                        print(f"  Git status shows {status_ahead} commits ahead - correcting")
+                        commits_ahead = status_ahead
 
         has_commits = commits_ahead > 0
 
         if has_commits:
-            print(f"Commits to push: {commits_ahead}")
+            print(f"\nCommits to push: {commits_ahead}")
             # Show recent commits that need to be pushed
-            if remote_branch_exists:
-                log_result = self.run_git_command(f"git log --oneline refs/remotes/origin/{info['current_branch']}..HEAD -{min(5, commits_ahead)}")
+            if remote_branch_exists and remote_commit_hash:
+                log_result = self.run_git_command(f"git log --oneline {remote_commit_hash}..{info['current_branch']} -{min(5, commits_ahead)}")
             else:
                 log_result = self.run_git_command(f"git log --oneline -{min(5, commits_ahead)}")
             

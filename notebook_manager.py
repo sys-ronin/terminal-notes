@@ -664,7 +664,7 @@ class NotebookManager:
 
     def print_footer(self, options):
         width, _ = self.get_terminal_size()
-        print("" * width)
+        #print("" * width)
         print(options)
         print()
 
@@ -2058,8 +2058,9 @@ class NotebookManager:
             
             security_exists = self.has_security_activity(notebook)
 
+            # ========== FIX: Remove [T]est button ==========
             if has_remote:
-                options = ["[V]isibility", "[T]est", "[P]ush", "[D]elete", "[C]hange"]
+                options = ["[V]isibility", "[S]ync", "[D]elete", "[C]hange"]
                 if security_exists:
                     options.append("[A]ctivity")
                 options.extend(["[B]ack", "[Q]uit"])
@@ -2068,6 +2069,7 @@ class NotebookManager:
                 if security_exists:
                     options.append("[A]ctivity")
                 options.extend(["[B]ack", "[Q]uit"])
+            # ========== END FIX ==========
             
             self.print_footer("  ".join(options))
             
@@ -2086,11 +2088,12 @@ class NotebookManager:
             elif cmd == "v" and has_remote:
                 self.toggle_visibility(notebook)
             
-            elif cmd == "t" and has_remote:
-                self.test_connection(notebook)
+            # ========== FIX: Remove test connection handler ==========
+            # Test button removed - no 't' handler needed
+            # ========== END FIX ==========
             
-            elif cmd == "p" and has_remote:
-                self.push_notebook(notebook)
+            elif cmd == "s" and has_remote:
+                self.sync_notebook(notebook)
             
             elif cmd == "d" and has_remote:
                 self.delete_repo(notebook)
@@ -2099,15 +2102,14 @@ class NotebookManager:
                 self.show_security_activity(notebook)
             
             # Handle commands with numbers
-            elif len(cmd) > 1 and cmd[0] in ['v', 't', 'p', 'd', 'a', 'c', 'l']:
+            # ========== FIX: Remove 't' from numbered command list ==========
+            elif len(cmd) > 1 and cmd[0] in ['v', 's', 'd', 'a', 'c', 'l']:
                 try:
                     num = int(cmd[1:])
                     if cmd[0] == 'v' and has_remote:
                         self.toggle_visibility(notebook)
-                    elif cmd[0] == 't' and has_remote:
-                        self.test_connection(notebook)
-                    elif cmd[0] == 'p' and has_remote:
-                        self.push_notebook(notebook)
+                    elif cmd[0] == 's' and has_remote:
+                        self.sync_notebook(notebook)
                     elif cmd[0] == 'd' and has_remote:
                         self.delete_repo(notebook)
                     elif cmd[0] == 'a':
@@ -2119,6 +2121,7 @@ class NotebookManager:
                 except ValueError:
                     print(f"Invalid command format. Use {cmd[0]} or {cmd[0]}#")
                     self.get_input("Press Enter to continue...")
+            # ========== END FIX ==========
             
             elif cmd == "q" or cmd == "qy":
                 if cmd == "qy":
@@ -2470,15 +2473,26 @@ class NotebookManager:
         except:
             return
         print()
-        print(f"Suggested repository name: {suggested_repo}")
-        repo_name = self.get_input(f"Repository name [{suggested_repo}]: ") or suggested_repo
+        print(f"Repository name: {suggested_repo}")
+        repo_name = suggested_repo
+        print("  (Repository name is fixed and cannot be changed)")
         print("\nRepository visibility:")
         print("[1] 🔒 Private - Only you can see and push")
         print("[2] 🔓 Public  - Everyone can see")
         print()
         vis_choice = self.get_input("Choose [1/2]: ")
+        if not vis_choice:
+            print("\nConfiguration cancelled.")
+            self.get_input("Press Enter to continue...")
+            return
+
         while vis_choice not in ['1', '2']:
-            vis_choice = self.get_input("Please enter 1 or 2: ")
+            vis_choice = self.get_input("Please enter 1 or 2 (or press Enter to cancel): ")
+            if not vis_choice:
+                print("\nConfiguration cancelled.")
+                self.get_input("Press Enter to continue...")
+                return
+
         visibility = "private" if vis_choice == "1" else "public"
         print("\n" + "=" * 50)
         print("Configuration Summary:")
@@ -2547,99 +2561,6 @@ class NotebookManager:
             print(f"\n✗ Failed to save configuration")
         self.get_input("Press Enter to continue...")
 
-
-    def get_account_for_notebook(self, notebook_id):
-        # First check accounts dict (fast path for already loaded)
-        for acc_id, account in self.accounts.get("accounts", {}).items():
-            if notebook_id in account.get("notebooks", {}):
-                return account
-        
-        # ========== SURGICAL FIX: Check TokenVault if not found in memory ==========
-        from token_vault import TokenVault
-        vault = TokenVault(self.app_dir)
-        
-        for acc_id in vault.list_accounts():
-            account_data = vault.get_full_account(acc_id)
-            if account_data and notebook_id in account_data.get("linked_notebooks", []):
-                # Return account in the expected format
-                return {
-                    "id": acc_id,
-                    "platform": account_data["platform"],
-                    "username": account_data["username"],
-                    "host": account_data["host"],
-                    "api_url": account_data["api_url"],
-                    "token_enc": acc_id,
-                    "notebooks": {notebook_id: {"repo": "unknown"}}  # Placeholder
-                }
-        # ========== END FIX ==========
-        
-        return None
-
-    def test_connection(self, notebook):
-        self.clear_screen()
-        self.print_header("Testing Connection")
-        git_config = notebook.get("git_config")
-        account = notebook.get("account")
-        if not git_config or not account:
-            print("Not configured")
-            self.get_input("Press Enter to continue...")
-            return
-        # ========== SURGICAL FIX: Use folder name, not git_config repo ==========
-        path = notebook.get('path')
-        if path and os.path.exists(path):
-            folder_name = os.path.basename(path)
-            if folder_name.endswith('.git'):
-                folder_name = folder_name[:-4]
-            repo_name = folder_name
-        else:
-            repo_name = git_config.get('repo', 'unknown')
-        token = self._decrypt_token(account['token_enc'])
-        if not token:
-            print("✗ Could not decrypt token")
-            self.get_input("Press Enter to continue...")
-            return
-        print(f"Account: {account['username']}@{account.get('platform', 'github')}")
-        print(f"Repository: {repo_name}")
-        print()
-        print("📡 Checking internet...", end="")
-        if not self.has_internet():
-            print("   No internet!")
-            print("\n   Cannot connect to GitHub. Check your internet.")
-            self.get_input("Press Enter to continue...")
-            return
-        print(" ✓ Connected!")
-        print("  Validating token...", end="")
-        if not self.check_token_valid(account, token):
-            print("   Invalid!")
-            print("\n   Your token is not working. Check your account settings.")
-            self.get_input("Press Enter to continue...")
-            return
-        print(" ✓ Valid!")
-        print(f"\n  Checking repository: {account['username']}/{repo_name}")
-        exists = self.repo_exists(account, repo_name, token)
-        if exists:
-            print("   ✓ Repository exists and is accessible")
-            auth_url = self.build_repo_url(account, repo_name).replace(
-                "https://", f"https://{account['username']}:{token}@"
-            )
-            git_cmd = f"git ls-remote {auth_url} HEAD"
-            git_result = subprocess.run(git_cmd, shell=True, capture_output=True, text=True)
-            if git_result.returncode == 0:
-                print("   ✓ Push access confirmed")
-            else:
-                print("   ⚠ Push access may be limited")
-        else:
-            print("   ℹ Repository doesn't exist yet")
-            print("     Will be created on first push")
-        self.get_input("Press Enter to continue...")
-
-    def repo_exists(self, account, repo_name, token):
-        import subprocess
-        cmd = f"curl -s -o /dev/null -w '%{{http_code}}' -H 'Authorization: token {token}' \
-               https://api.github.com/repos/{account['username']}/{repo_name}"
-        result = subprocess.run(cmd, shell=True, capture_output=True, text=True)
-        return result.stdout.strip() == "200"
-
     def create_repo(self, account, repo_name, token, visibility="private"):
         import subprocess
         import json
@@ -2665,227 +2586,421 @@ class NotebookManager:
              https://api.github.com/repos/{full_name}'''
         result = subprocess.run(cmd, shell=True, capture_output=True, text=True)
         return result.returncode == 0 or "204" in result.stderr
-    def push_notebook(self, notebook):
+    
+    def sync_notebook(self, notebook):
+        """Smart sync - detects state and acts accordingly (pull + push)"""
         self.clear_screen()
-        self.print_header(f"Push {notebook['name']}")
-
+        
         git_config = notebook.get("git_config")
         account = notebook.get("account")
-        if not git_config or not account:
-            print("Not configured. Please configure first.")
-            self.get_input("Press Enter to continue...")
-            return
-
-        import signal
-        import subprocess
-
-        def timeout_handler(signum, frame):
-            raise TimeoutError("Operation timed out")
-
-        signal.signal(signal.SIGALRM, timeout_handler)
         
-        path = notebook['path']
-        if not os.path.exists(path):
-            print("Notebook path not found")
-            self.get_input("Press Enter to continue...")
+        if not git_config or not account:
+            print("  Not configured with a remote repository.")
+            print("  Use [C]hange -> Link to configure first.")
+            self.get_input("\nPress Enter to continue...")
             return
-
-        # Use the actual folder name from the notebook path
+        
+        path = notebook.get('path')
+        if not path or not os.path.exists(path):
+            print("  Notebook path not found.")
+            self.get_input("\nPress Enter to continue...")
+            return
+        
         folder_name = os.path.basename(path)
         if folder_name.endswith('.git'):
             folder_name = folder_name[:-4]
         repo_name = folder_name
+        
         token = self._decrypt_token(account['token_enc'])
         if not token:
-            print("Could not decrypt token")
-            self.get_input("Press Enter to continue...")
+            print("  Could not decrypt account token.")
+            print("  Please re-add your account.")
+            self.get_input("\nPress Enter to continue...")
             return
-
-        max_retries = 3
-        retry_count = 0
-
-        while retry_count < max_retries:
-            try:
-                print("\nChecking internet connection...", end="", flush=True)
-                signal.alarm(10)
-                if not self.has_internet():
-                    print(" FAILED")
-                    print("\nNo internet connection.")
-                    signal.alarm(0)
-                    retry_count += 1
-                    if retry_count < max_retries:
-                        retry = input(f"\nRetry? ({max_retries-retry_count} left) [Y/n]: ").lower()
-                        if retry == 'n':
-                            return
-                        continue
-                    else:
-                        print("Max retries exceeded.")
-                        self.get_input("Press Enter to continue...")
-                        return
-                print(" OK")
-                signal.alarm(0)
-                break
-            except TimeoutError:
-                signal.alarm(0)
-                retry_count += 1
-                print(f" TIMEOUT (attempt {retry_count}/{max_retries})")
-                if retry_count < max_retries:
-                    retry = input(f"Retry? ({max_retries-retry_count} left) [Y/n]: ").lower()
-                    if retry == 'n':
-                        return
-                    continue
-                else:
-                    print("Max retries exceeded.")
-                    self.get_input("Press Enter to continue...")
-                    return
-
-        retry_count = 0
-        while retry_count < max_retries:
-            try:
-                print("Validating token...", end="", flush=True)
-                signal.alarm(10)
-                if not self.check_token_valid(account, token):
-                    print(" FAILED")
-                    signal.alarm(0)
-                    print("\nToken is invalid or expired.")
-                    self.get_input("Press Enter to continue...")
-                    return
-                print(" OK")
-                signal.alarm(0)
-                break
-            except TimeoutError:
-                signal.alarm(0)
-                retry_count += 1
-                print(f" TIMEOUT (attempt {retry_count}/{max_retries})")
-                if retry_count < max_retries:
-                    retry = input(f"Retry? ({max_retries-retry_count} left) [Y/n]: ").lower()
-                    if retry == 'n':
-                        return
-                    continue
-                else:
-                    print("Max retries exceeded.")
-                    self.get_input("Press Enter to continue...")
-                    return
-
-        retry_count = 0
-        while retry_count < max_retries:
-            try:
-                print(f"\nChecking repository: {account['username']}/{repo_name}")
-                signal.alarm(15)
-                exists = self.repo_exists(account, repo_name, token)
-                signal.alarm(0)
-                if not exists:
-                    print("Repository doesn't exist. Creating...", end="", flush=True)
-                    signal.alarm(15)
-                    if self.create_repo(account, repo_name, token, git_config.get("visibility", "private")):
-                        print(" OK")
-                    else:
-                        print(" FAILED")
-                        signal.alarm(0)
-                        print("\nCould not create repository.")
-                        self.get_input("Press Enter to continue...")
-                        return
-                    signal.alarm(0)
-                else:
-                    print("Repository exists")
-                break
-            except TimeoutError:
-                signal.alarm(0)
-                retry_count += 1
-                print(f" TIMEOUT (attempt {retry_count}/{max_retries})")
-                if retry_count < max_retries:
-                    retry = input(f"Retry? ({max_retries-retry_count} left) [Y/n]: ").lower()
-                    if retry == 'n':
-                        return
-                    continue
-                else:
-                    print("Max retries exceeded.")
-                    self.get_input("Press Enter to continue...")
-                    return
-
+        
+        # Step 1: Check internet
+        print("  Checking internet connection...", end="", flush=True)
+        if not self.has_internet():
+            print(" FAILED")
+            print("\n  No internet connection. Please check your network.")
+            self.get_input("\nPress Enter to continue...")
+            return
+        print(" OK")
+        
+        # Step 2: Validate token
+        print("  Validating account token...", end="", flush=True)
+        if not self.check_token_valid(account, token):
+            print(" INVALID")
+            print("\n  Account token is invalid or expired.")
+            print("  Please re-add your account.")
+            self.get_input("\nPress Enter to continue...")
+            return
+        print(" OK")
+        
+        # Step 3: Check if Git repo is initialized
         git_dir = os.path.join(path, ".git")
         if not os.path.exists(git_dir):
-            print("\nInitializing git repository...")
+            print("\n  Initializing git repository...")
             subprocess.run(["git", "init"], cwd=path, capture_output=True)
-
-        auth_url = self.build_repo_url(account, repo_name).replace(
-            "https://", f"https://{account['username']}:{token}@"
-        )
-
-        subprocess.run(["git", "remote", "remove", "origin"], cwd=path, capture_output=True)
-        subprocess.run(["git", "remote", "add", "origin", auth_url], cwd=path)
-
-        print("\nPushing...")
-
-        # ========== SURGICAL FIX: Get current branch and force push ==========
-        branch_result = subprocess.run(
-            ["git", "rev-parse", "--abbrev-ref", "HEAD"],
+            print("  Git repository initialized.")
+        
+        # Step 4: Check if remote exists and has commits
+        remote_exists = False
+        remote_has_commits = False
+        
+        # Check if remote origin exists
+        remote_result = subprocess.run(
+            ["git", "remote", "get-url", "origin"],
             cwd=path,
             capture_output=True,
             text=True
         )
-        current_branch = branch_result.stdout.strip() if branch_result.returncode == 0 else "master"
-        print(f"  Current branch: {current_branch}")
-        # ========== END FIX ==========
-
-        push_timeout = 30
-        retry_count = 0
-        max_push_retries = 2
-
-        while retry_count <= max_push_retries:
-            try:
-                signal.alarm(push_timeout)
-                # ========== SURGICAL FIX: Use --force with explicit branch ==========
-                push_result = subprocess.run(
-                    ["git", "push", "origin", f"{current_branch}:{current_branch}", "--force"],
-                    cwd=path,
-                    capture_output=True,
-                    text=True,
-                    timeout=push_timeout
-                )
-                # ========== END FIX ==========
-                signal.alarm(0)
+        remote_exists = (remote_result.returncode == 0)
+        
+        # If remote exists, check if it has any commits
+        if remote_exists:
+            ls_remote_result = subprocess.run(
+                ["git", "ls-remote", "origin", "HEAD"],
+                cwd=path,
+                capture_output=True,
+                text=True
+            )
+            remote_has_commits = (ls_remote_result.returncode == 0 and ls_remote_result.stdout.strip())
+        
+        # Step 5: Build auth URL for git operations
+        auth_url = self.build_repo_url(account, repo_name).replace(
+            "https://", f"https://{account['username']}:{token}@"
+        )
+        
+        # Set up remote if it doesn't exist
+        if not remote_exists:
+            subprocess.run(["git", "remote", "add", "origin", auth_url], cwd=path, capture_output=True)
+            remote_exists = True
+        
+        # Step 6: Fetch remote to compare commits
+        fetch_result = subprocess.run(
+            ["git", "fetch", "origin"],
+            cwd=path,
+            capture_output=True,
+            text=True
+        )
+        
+        # Step 7: Count commits ahead/behind (only if remote has commits)
+        ahead = 0
+        behind = 0
+        
+        if remote_has_commits:
+            # Count commits local has that remote doesn't (ahead)
+            ahead_result = subprocess.run(
+                ["git", "rev-list", "origin/master..master", "--count"],
+                cwd=path,
+                capture_output=True,
+                text=True
+            )
+            if ahead_result.returncode == 0 and ahead_result.stdout.strip():
+                ahead = int(ahead_result.stdout.strip())
             
-                if push_result.returncode == 0:
-                    print("\nPush successful!")
-                    # ========== SURGICAL FIX: Remove hanging git fetch ==========
-                    # subprocess.run(["git", "fetch", "origin"], cwd=path, capture_output=True)
-                    # ========== END FIX ==========
-                    for acc_id, acc in self.accounts["accounts"].items():
-                        if notebook['id'] in acc.get("notebooks", {}):
-                            acc["notebooks"][notebook['id']]["last_push"] = datetime.now().isoformat()
-                            self.save_accounts()
-                            break
+            # Count commits remote has that local doesn't (behind)
+            behind_result = subprocess.run(
+                ["git", "rev-list", "master..origin/master", "--count"],
+                cwd=path,
+                capture_output=True,
+                text=True
+            )
+            if behind_result.returncode == 0 and behind_result.stdout.strip():
+                behind = int(behind_result.stdout.strip())
+        
+        # Step 8: Get total commit count (for new repo)
+        total_commits_result = subprocess.run(
+            ["git", "rev-list", "--count", "HEAD"],
+            cwd=path,
+            capture_output=True,
+            text=True
+        )
+        total_commits = int(total_commits_result.stdout.strip()) if total_commits_result.returncode == 0 else 0
+        
+        # Step 9: Determine sync state and show description
+        state = self._get_sync_state(remote_exists, remote_has_commits, ahead, behind, total_commits)
+        
+        self.clear_screen()
+        width, _ = self.get_terminal_size()
+        
+        print("" * width)
+        print(f"SYNC NOTEBOOK".center(width))
+        print("" * width)
+        print()
+        
+        # Show description based on state
+        if state == "no_remote":
+            print(f"  Status: No remote repository found.")
+            print()
+            print(f"  What will happen:")
+            print(f"  • Create new {'private' if git_config.get('visibility', 'private') == 'private' else 'public'} repository on {account.get('platform', 'github').capitalize()}")
+            print(f"    Name: {repo_name}")
+            print(f"  • Push all {total_commits} commits to the remote")
+            print(f"  • Link this notebook to the repository")
+            print()
+            print(f"  Proceed? [y/N]: ", end="")
+            confirm = input().strip().lower()
+            if confirm != 'y':
+                print("\n  Sync cancelled.")
+                self.get_input("\nPress Enter to continue...")
+                return
+            
+            # Create repository
+            print(f"\n  Creating repository on {account.get('platform', 'github').capitalize()}...", end="", flush=True)
+            if not self.repo_exists(account, repo_name, token):
+                if not self.create_repo(account, repo_name, token, git_config.get("visibility", "private")):
+                    print(" FAILED")
+                    print("\n  Could not create repository. Check your token permissions.")
+                    self.get_input("\nPress Enter to continue...")
+                    return
+            print(" OK")
+            
+            # Push
+            print("  Pushing commits...", end="", flush=True)
+            branch_result = subprocess.run(
+                ["git", "rev-parse", "--abbrev-ref", "HEAD"],
+                cwd=path,
+                capture_output=True,
+                text=True
+            )
+            current_branch = branch_result.stdout.strip() if branch_result.returncode == 0 else "master"
+            
+            push_result = subprocess.run(
+                ["git", "push", "-u", "origin", f"{current_branch}:{current_branch}"],
+                cwd=path,
+                capture_output=True,
+                text=True
+            )
+            
+            if push_result.returncode != 0:
+                print(" FAILED")
+                print(f"\n  Push failed: {push_result.stderr[:200]}")
+                self.get_input("\nPress Enter to continue...")
+                return
+            print(" OK")
+            
+            # Update last_push timestamp
+            for acc_id, acc in self.accounts["accounts"].items():
+                if notebook['id'] in acc.get("notebooks", {}):
+                    acc["notebooks"][notebook['id']]["last_push"] = datetime.now().isoformat()
+                    self.save_accounts()
                     break
-                else:
-                    print(f"\nPush failed:")
-                    print(push_result.stderr)
-                    if retry_count < max_push_retries:
-                        retry = input(f"Retry push? ({max_push_retries-retry_count} left) [Y/n]: ").lower()
-                        if retry == 'n':
-                            break
-                        retry_count += 1
-                        print("Retrying push...")
-                        continue
-                    else:
-                        break
-                        
-            except (subprocess.TimeoutExpired, TimeoutError):
-                signal.alarm(0)
-                retry_count += 1
-                print(f"\nPush TIMEOUT after {push_timeout} seconds (attempt {retry_count}/{max_push_retries+1})")
-                if retry_count <= max_push_retries:
-                    retry = input(f"Retry push? ({max_push_retries-retry_count+1} left) [Y/n]: ").lower()
-                    if retry == 'n':
-                        break
-                    print("Retrying push...")
-                    continue
-                else:
-                    print("Max push retries exceeded.")
+            
+            print(f"\n  Sync complete!")
+            print(f"  Created repository and pushed {total_commits} commits.")
+            
+        elif state == "push_only":
+            print(f"  Status: Your local notebook has {ahead} commit(s)")
+            print(f"          that are not on {account.get('platform', 'github').capitalize()}.")
+            print()
+            print(f"  What will happen:")
+            print(f"  • Push {ahead} commit(s) to the remote")
+            print()
+            print(f"  Proceed? [y/N]: ", end="")
+            confirm = input().strip().lower()
+            if confirm != 'y':
+                print("\n  Sync cancelled.")
+                self.get_input("\nPress Enter to continue...")
+                return
+            
+            print(f"\n  Pushing {ahead} commit(s)...", end="", flush=True)
+            branch_result = subprocess.run(
+                ["git", "rev-parse", "--abbrev-ref", "HEAD"],
+                cwd=path,
+                capture_output=True,
+                text=True
+            )
+            current_branch = branch_result.stdout.strip() if branch_result.returncode == 0 else "master"
+            
+            push_result = subprocess.run(
+                ["git", "push", "origin", f"{current_branch}:{current_branch}"],
+                cwd=path,
+                capture_output=True,
+                text=True
+            )
+            
+            if push_result.returncode != 0:
+                print(" FAILED")
+                print(f"\n  Push failed: {push_result.stderr[:200]}")
+                self.get_input("\nPress Enter to continue...")
+                return
+            print(" OK")
+            
+            # Update last_push timestamp
+            for acc_id, acc in self.accounts["accounts"].items():
+                if notebook['id'] in acc.get("notebooks", {}):
+                    acc["notebooks"][notebook['id']]["last_push"] = datetime.now().isoformat()
+                    self.save_accounts()
                     break
-
-        signal.signal(signal.SIGALRM, signal.SIG_DFL)
+            
+            print(f"\n  Sync complete!")
+            print(f"  Pushed {ahead} commit(s).")
+            
+        elif state == "pull_only":
+            print(f"  Status: Remote has {behind} commit(s) that are not")
+            print(f"          in your local notebook.")
+            print()
+            print(f"  What will happen:")
+            print(f"  • Pull {behind} commit(s) from the remote")
+            print()
+            print(f"  Proceed? [y/N]: ", end="")
+            confirm = input().strip().lower()
+            if confirm != 'y':
+                print("\n  Sync cancelled.")
+                self.get_input("\nPress Enter to continue...")
+                return
+            
+            print(f"\n  Pulling {behind} commit(s)...", end="", flush=True)
+            pull_result = subprocess.run(
+                ["git", "pull", "--rebase", "origin", "master"],
+                cwd=path,
+                capture_output=True,
+                text=True
+            )
+            
+            if pull_result.returncode != 0:
+                print(" FAILED")
+                print(f"\n  Pull failed: {pull_result.stderr[:200]}")
+                self.get_input("\nPress Enter to continue...")
+                return
+            print(" OK")
+            
+            print(f"\n  Sync complete!")
+            print(f"  Pulled {behind} commit(s).")
+            
+        elif state == "pull_then_push":
+            print(f"  Status: Local has {ahead} commit(s), Remote has {behind} commit(s)")
+            print(f"          Both have changes not in the other.")
+            print()
+            print(f"  What will happen:")
+            print(f"  • Pull {behind} commit(s) from the remote")
+            print(f"  • Then push your {ahead} commit(s)")
+            print()
+            print(f"  Proceed? [y/N]: ", end="")
+            confirm = input().strip().lower()
+            if confirm != 'y':
+                print("\n  Sync cancelled.")
+                self.get_input("\nPress Enter to continue...")
+                return
+            
+            print(f"\n  Pulling {behind} commit(s)...", end="", flush=True)
+            pull_result = subprocess.run(
+                ["git", "pull", "--rebase", "origin", "master"],
+                cwd=path,
+                capture_output=True,
+                text=True
+            )
+            
+            if pull_result.returncode != 0:
+                print(" FAILED")
+                print(f"\n  Pull failed: {pull_result.stderr[:200]}")
+                self.get_input("\nPress Enter to continue...")
+                return
+            print(" OK")
+            
+            print(f"  Pushing {ahead} commit(s)...", end="", flush=True)
+            branch_result = subprocess.run(
+                ["git", "rev-parse", "--abbrev-ref", "HEAD"],
+                cwd=path,
+                capture_output=True,
+                text=True
+            )
+            current_branch = branch_result.stdout.strip() if branch_result.returncode == 0 else "master"
+            
+            push_result = subprocess.run(
+                ["git", "push", "origin", f"{current_branch}:{current_branch}"],
+                cwd=path,
+                capture_output=True,
+                text=True
+            )
+            
+            if push_result.returncode != 0:
+                print(" FAILED")
+                print(f"\n  Push failed: {push_result.stderr[:200]}")
+                self.get_input("\nPress Enter to continue...")
+                return
+            print(" OK")
+            
+            # Update last_push timestamp
+            for acc_id, acc in self.accounts["accounts"].items():
+                if notebook['id'] in acc.get("notebooks", {}):
+                    acc["notebooks"][notebook['id']]["last_push"] = datetime.now().isoformat()
+                    self.save_accounts()
+                    break
+            
+            print(f"\n  Sync complete!")
+            print(f"  Pulled {behind} commit(s) and pushed {ahead} commit(s).")
+            
+        elif state == "already_synced":
+            print(f"  Status: Local and remote are already in sync.")
+            print()
+            print(f"  No actions needed.")
+            
+        else:
+            # Fallback - just push
+            print(f"  Status: Unable to determine sync state.")
+            print()
+            print(f"  What will happen:")
+            print(f"  • Push all commits to the remote")
+            print()
+            print(f"  Proceed? [y/N]: ", end="")
+            confirm = input().strip().lower()
+            if confirm != 'y':
+                print("\n  Sync cancelled.")
+                self.get_input("\nPress Enter to continue...")
+                return
+            
+            print(f"\n  Pushing commits...", end="", flush=True)
+            branch_result = subprocess.run(
+                ["git", "rev-parse", "--abbrev-ref", "HEAD"],
+                cwd=path,
+                capture_output=True,
+                text=True
+            )
+            current_branch = branch_result.stdout.strip() if branch_result.returncode == 0 else "master"
+            
+            push_result = subprocess.run(
+                ["git", "push", "origin", f"{current_branch}:{current_branch}"],
+                cwd=path,
+                capture_output=True,
+                text=True
+            )
+            
+            if push_result.returncode != 0:
+                print(" FAILED")
+                print(f"\n  Push failed: {push_result.stderr[:200]}")
+                self.get_input("\nPress Enter to continue...")
+                return
+            print(" OK")
+            
+            for acc_id, acc in self.accounts["accounts"].items():
+                if notebook['id'] in acc.get("notebooks", {}):
+                    acc["notebooks"][notebook['id']]["last_push"] = datetime.now().isoformat()
+                    self.save_accounts()
+                    break
+            
+            print(f"\n  Sync complete!")
+        
         self.get_input("\nPress Enter to continue...")
+
+    def _get_sync_state(self, remote_exists, remote_has_commits, ahead, behind, total_commits):
+        """Determine sync state based on detected conditions"""
+        if not remote_exists:
+            return "no_remote"
+        elif not remote_has_commits:
+            return "push_only"
+        elif ahead > 0 and behind == 0:
+            return "push_only"
+        elif ahead == 0 and behind > 0:
+            return "pull_only"
+        elif ahead > 0 and behind > 0:
+            return "pull_then_push"
+        elif ahead == 0 and behind == 0:
+            return "already_synced"
+        else:
+            return "unknown"
 
     def has_internet(self):
         import socket
@@ -2912,67 +3027,246 @@ class NotebookManager:
         return result.stdout.strip() == "200"
 
     def delete_repo(self, notebook):
+        """Delete remote repository or unlink with multiple options"""
         self.clear_screen()
-        self.print_header("⚠ DELETE REPOSITORY ⚠")
+        
         git_config = notebook.get("git_config")
         account = notebook.get("account")
+        
         if not git_config or not account:
-            print("Not configured.")
+            print("  ⚠ Not configured with a remote repository.")
             self.get_input("Press Enter to continue...")
             return
+        
         repo_name = git_config['repo']
         full_name = f"{account['username']}/{repo_name}"
-        print(f"Repository: {full_name}")
-        print("This will PERMANENTLY delete the GitHub repository!")
-        print("Local notebook files will NOT be affected.")
+        
+        while True:
+            self.clear_screen()
+            width, _ = self.get_terminal_size()
+            
+            print("" * width)
+            print(f"Delete Options - {notebook['name']}".center(width))
+            print("" * width)
+            print()
+            print(f"  Repository: {full_name}")
+            print(f"  Account: {account['username']}@{account.get('platform', 'github')}")
+            print()
+            print("  [1] Delete remote repository only")
+            print("      • Permanently delete from GitHub/GitLab/Bitbucket")
+            print("      • Local notebook files remain untouched")
+            print("      • Git remote will be removed from local config")
+            print()
+            print("  [2] Unlink remote (keep repository)")
+            print("      • Remove git remote 'origin' from local config")
+            print("      • Remote repository stays on server")
+            print("      • Local notebook files remain untouched")
+            print()
+            print("  [3] Cancel")
+            print()
+            print("" * width)
+            
+            choice = self.get_input("  Choose [1-3]: ").strip()
+            
+            if choice == "1":
+                # Delete remote repository
+                self._delete_remote_repository(notebook, account, repo_name, full_name)
+                break
+            elif choice == "2":
+                # Unlink remote only
+                self._unlink_remote(notebook)
+                break
+            elif choice == "3":
+                print("\n  Cancelled.")
+                self.get_input("Press Enter to continue...")
+                break
+            else:
+                print("\n  Invalid choice. Press Enter to continue...")
+                self.get_input("> ")
+
+    def _delete_remote_repository(self, notebook, account, repo_name, full_name):
+        """Delete remote repository only"""
+        self.clear_screen()
+        width, _ = self.get_terminal_size()
+        
+        print("" * width)
+        print("⚠ DELETE REMOTE REPOSITORY ⚠".center(width))
+        print("" * width)
         print()
-        print("Checking connection...", end="")
+        print(f"  Repository: {full_name}")
+        print(f"  Account: {account['username']}@{account.get('platform', 'github')}")
+        print()
+        print("  This will PERMANENTLY delete the remote repository!")
+        print("  Local notebook files will NOT be affected.")
+        print()
+        print("  You can always push again later to recreate the repository.")
+        print()
+        
+        # Check internet connection
+        print("  Checking connection...", end="", flush=True)
         if not self.has_internet():
-            print("No internet!")
-            print("\nCannot connect to GitHub. Please check your internet.")
+            print(" FAILED")
+            print("\n  No internet connection. Cannot delete remote repository.")
             self.get_input("Press Enter to continue...")
             return
-        print(" ✓ Connected!")
+        print(" OK")
+        
         token = self._decrypt_token(account['token_enc'])
         if not token:
-            print("Could not decrypt token")
+            print("\n  Could not decrypt token.")
             self.get_input("Press Enter to continue...")
             return
-        print("Validating token...", end="")
+        
+        print("  Validating token...", end="", flush=True)
         if not self.check_token_valid(account, token):
-            print("Invalid!")
-            print("\nYour token is not working. Please check your account settings.")
+            print(" INVALID")
+            print("\n  Token is invalid or expired.")
             self.get_input("Press Enter to continue...")
             return
-        print(" ✓ Valid!")
-        print(f"\nChecking if repository exists...", end="")
+        print(" OK")
+        
+        print(f"\n  Checking if repository exists...", end="", flush=True)
         exists = self.repo_exists(account, repo_name, token)
         if not exists:
-            print("Not found!")
-            print("\nRepository doesn't exist on GitHub.")
+            print(" NOT FOUND")
+            print("\n  Repository doesn't exist on remote.")
+            print("  Cleaning up local configuration...")
+            self._unlink_remote(notebook)
             self.get_input("Press Enter to continue...")
             return
-        print(" ✓ Found!")
+        print(" FOUND")
+        
         print()
-        confirm = self.get_input(f"Type '{repo_name}' to confirm deletion: ")
+        confirm = self.get_input(f"  Type '{repo_name}' to confirm deletion: ")
+        
         if confirm != repo_name:
-            print("Confirmation failed. Delete cancelled.")
+            print("\n  Confirmation failed. Delete cancelled.")
             self.get_input("Press Enter to continue...")
             return
-        print("\nDeleting repository...", end="")
+        
+        print("\n  Deleting repository...", end="", flush=True)
         if self.delete_github_repo(account, repo_name, token):
-            print(" ✓ Deleted!")
+            print(" DELETED")
+            
+            # Remove git remote from local
+            path = notebook['path']
+            if path and os.path.exists(path):
+                subprocess.run(["git", "remote", "remove", "origin"], cwd=path, capture_output=True)
+                print("  ✓ Git remote removed from local config")
+            
+            # Clear configuration from registry
             for acc_id, acc in self.accounts["accounts"].items():
                 if notebook['id'] in acc.get("notebooks", {}):
                     del acc["notebooks"][notebook['id']]
                     self.save_accounts()
                     break
-            path = notebook['path']
-            subprocess.run(["git", "remote", "remove", "origin"], cwd=path, capture_output=True)
+            
+            # Update notebook object
             notebook['git_config'] = None
             notebook['account'] = None
+            
+            # Also update TokenVault
+            from token_vault import TokenVault
+            vault = TokenVault(self.app_dir)
+            account_data = vault.get_full_account(account['id'])
+            if account_data:
+                linked = account_data.get("linked_notebooks", [])
+                if notebook['id'] in linked:
+                    linked.remove(notebook['id'])
+                    vault.store_token(
+                        account['id'],
+                        account_data['username'],
+                        account_data['platform'],
+                        account_data['host'],
+                        account_data['api_url'],
+                        account_data['token'],
+                        linked
+                    )
+            
+            print("\n  ✓ Remote repository deleted successfully!")
         else:
-            print("Failed!")
+            print(" FAILED")
+            print("\n  Could not delete repository. Check your token permissions.")
+        
+        self.get_input("\nPress Enter to continue...")
+
+    def _unlink_remote(self, notebook):
+        """Unlink remote repository (keep remote, just remove local connection)"""
+        self.clear_screen()
+        width, _ = self.get_terminal_size()
+        
+        git_config = notebook.get("git_config")
+        account = notebook.get("account")
+        
+        if not git_config or not account:
+            print("  ⚠ Not configured with a remote repository.")
+            self.get_input("Press Enter to continue...")
+            return
+        
+        repo_name = git_config['repo']
+        full_name = f"{account['username']}/{repo_name}"
+        
+        print("" * width)
+        print("Unlink Remote Repository".center(width))
+        print("" * width)
+        print()
+        print(f"  Repository: {full_name}")
+        print(f"  Account: {account['username']}@{account.get('platform', 'github')}")
+        print()
+        print("  This will REMOVE the git remote 'origin' from your local config.")
+        print("  The remote repository will remain untouched on the server.")
+        print("  Your local notebook files will NOT be affected.")
+        print()
+        print("  You can re-link the notebook later using [C]hange → [3] Change remote")
+        print()
+        
+        confirm = self.get_input("  Unlink this notebook from the remote repository? [y/N]: ").lower()
+        
+        if confirm != 'y':
+            print("\n  Cancelled.")
+            self.get_input("Press Enter to continue...")
+            return
+        
+        # Remove git remote from local
+        path = notebook['path']
+        if path and os.path.exists(path):
+            result = subprocess.run(["git", "remote", "remove", "origin"], cwd=path, capture_output=True)
+            if result.returncode == 0:
+                print("  ✓ Git remote removed from local config")
+            else:
+                print("  ⚠ Git remote not found or already removed")
+        
+        # Clear configuration from registry
+        for acc_id, acc in self.accounts["accounts"].items():
+            if notebook['id'] in acc.get("notebooks", {}):
+                del acc["notebooks"][notebook['id']]
+                self.save_accounts()
+                break
+        
+        # Also update TokenVault
+        from token_vault import TokenVault
+        vault = TokenVault(self.app_dir)
+        account_data = vault.get_full_account(account['id'])
+        if account_data:
+            linked = account_data.get("linked_notebooks", [])
+            if notebook['id'] in linked:
+                linked.remove(notebook['id'])
+                vault.store_token(
+                    account['id'],
+                    account_data['username'],
+                    account_data['platform'],
+                    account_data['host'],
+                    account_data['api_url'],
+                    account_data['token'],
+                    linked
+                )
+        
+        # Update notebook object
+        notebook['git_config'] = None
+        notebook['account'] = None
+        
+        print("\n  ✓ Notebook unlinked from remote repository!")
+        self.get_input("\nPress Enter to continue...")
 
     def show_add_account(self):
         self.clear_screen()
