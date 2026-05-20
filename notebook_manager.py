@@ -383,11 +383,9 @@ class NotebookManager:
             autolock = False
             vault_id = None
             
-            # ========== FIX: Skip legacy encrypted string entries ==========
+            # ========== Skip legacy encrypted string entries ==========
             if isinstance(entry, str):
                 # Legacy encrypted entry - skip processing, will be handled by main UI
-                # Just create a basic placeholder
-                # Try to get name from folder
                 for folder in os.listdir(self.manager.notebooks_root):
                     if folder.endswith(notebook_id):
                         if '-' in folder:
@@ -444,7 +442,67 @@ class NotebookManager:
                     elif autolock and not is_first_load:
                         is_locked = entry.get("locked", True)
                 
-                if path and os.path.exists(path):
+                # ========== Get counts from live NoteManager for unlocked notebooks ==========
+                if not is_locked and self.manager:
+                    live_notebook = self.manager.find_notebook_by_id(notebook_id)
+                    if live_notebook:
+                        # Force load content if notebook is unlocked but empty
+                        if len(live_notebook.notes) == 0 and len(live_notebook.subnotebooks) == 0:
+                            from notebook_operations import NotebookOperations
+                            ops = NotebookOperations(self.manager)
+                            crypto = self.manager.session_keys.get(notebook_id)
+                            if crypto and hasattr(live_notebook, 'custom_path') and live_notebook.custom_path:
+                                reloaded = ops.load_notebook_from_path_with_crypto(live_notebook.custom_path, crypto)
+                                if reloaded:
+                                    live_notebook.notes = reloaded.notes
+                                    live_notebook.subnotebooks = reloaded.subnotebooks
+                                    for i, nb in enumerate(self.manager.notebooks):
+                                        if nb.id == notebook_id:
+                                            self.manager.notebooks[i] = live_notebook
+                                            break
+                        
+                        total_notes = live_notebook.get_total_note_count()
+                        total_files = live_notebook.get_file_note_count()
+                        note_count = total_notes - total_files
+                        file_count = total_files
+                        sub_count = live_notebook.get_total_subnotebook_count()
+                    elif path and os.path.exists(path) and not is_encrypted:
+                        # Fallback: read directly for unencrypted notebooks only
+                        struct_file = os.path.join(path, "structure.json")
+                        if os.path.exists(struct_file):
+                            try:
+                                with open(struct_file, 'r') as f:
+                                    struct_data = json.load(f)
+                                
+                                def count_items(nb_data):
+                                    n = 0
+                                    f = 0
+                                    s = 0
+                                    for note in nb_data.get("notes", []):
+                                        if note.get("file_extension"):
+                                            f += 1
+                                        else:
+                                            n += 1
+                                    s += len(nb_data.get("subnotebooks", []))
+                                    for sub in nb_data.get("subnotebooks", []):
+                                        sub_n, sub_f, sub_s = count_items(sub)
+                                        n += sub_n
+                                        f += sub_f
+                                        s += sub_s
+                                    return n, f, s
+                                
+                                if "notebooks" in struct_data:
+                                    for nb in struct_data["notebooks"]:
+                                        n, f, s = count_items(nb)
+                                        note_count += n
+                                        file_count += f
+                                        sub_count += s
+                                else:
+                                    note_count, file_count, sub_count = count_items(struct_data)
+                            except:
+                                pass
+                elif path and os.path.exists(path) and not is_encrypted:
+                    # For locked but unencrypted notebooks (shouldn't happen)
                     struct_file = os.path.join(path, "structure.json")
                     if os.path.exists(struct_file):
                         try:
@@ -478,6 +536,7 @@ class NotebookManager:
                                 note_count, file_count, sub_count = count_items(struct_data)
                         except:
                             pass
+                # ========== END FIX ==========
             
             # Get git config
             git_config = self.get_notebook_config(notebook_id)
@@ -1964,10 +2023,24 @@ class NotebookManager:
             # Get vault name
             vault_name = system_entry.get("vault", "default")
             
-            # Get counts from notebook object (already loaded by main manager)
-            note_count = notebook.get('note_count', 0)
-            file_count = notebook.get('file_count', 0)
-            sub_count = notebook.get('sub_count', 0)
+            # ========== Get live counts from main NoteManager (one source of truth) ==========
+            live_notebook = self.manager.find_notebook_by_id(notebook_id)
+            if live_notebook:
+                total_notes = live_notebook.get_total_note_count()
+                total_files = live_notebook.get_file_note_count()
+                note_count = total_notes - total_files
+                file_count = total_files
+                sub_count = live_notebook.get_total_subnotebook_count()
+                # Update the dict for consistency
+                notebook['note_count'] = note_count
+                notebook['file_count'] = file_count
+                notebook['sub_count'] = sub_count
+            else:
+                # Fallback to dict values if live notebook not found
+                note_count = notebook.get('note_count', 0)
+                file_count = notebook.get('file_count', 0)
+                sub_count = notebook.get('sub_count', 0)
+            # ========== END FIX ==========
             
             self.clear_screen()
             width, _ = self.get_terminal_size()
@@ -2001,7 +2074,11 @@ class NotebookManager:
             
             git_config = notebook.get("git_config")
             account = notebook.get("account")
-            has_remote = git_config and account
+            has_remote = git_config and account and not is_locked
+            
+            # Get platform name for display
+            platform_name = account.get('platform', 'git') if account else 'git'
+            platform_display = platform_name.title() if platform_name else 'Git'
             
             # Get folder name for repository display
             folder_name = ""
@@ -2025,10 +2102,10 @@ class NotebookManager:
                 except:
                     return dt_str[:16]
             
-            if has_remote:
+            if has_remote and not is_locked:
                 visibility = git_config.get("visibility", "private")
                 visibility_display = "🔒 PRIVATE" if visibility == "private" else "🔐 PUBLIC"
-                print(f"Account: {account['username']}@{account.get('platform', 'github')}")
+                print(f"Account: {account['username']}@{platform_name}")
                 print(f"Repository: {folder_name}")
                 print(f"Visibility: {visibility_display}")
                 if git_config.get('last_push'):
@@ -2046,7 +2123,10 @@ class NotebookManager:
                     except:
                         pass
             else:
-                print("GitHub: Not configured")
+                if is_locked:
+                    print(f"{platform_display}: Locked - unlock to use")
+                else:
+                    print(f"{platform_display}: Not configured")
             
             print()
             print(f"Vault: {vault_name}")
@@ -2058,24 +2138,65 @@ class NotebookManager:
             
             security_exists = self.has_security_activity(notebook)
 
-            # ========== FIX: Remove [T]est button ==========
-            if has_remote:
-                options = ["[V]isibility", "[S]ync", "[D]elete", "[C]hange"]
+            # ========== Disable remote options for locked notebooks ==========
+            if is_locked:
+                # Locked notebook - only basic options
+                options = ["[C]hange"]
                 if security_exists:
                     options.append("[A]ctivity")
                 options.extend(["[B]ack", "[Q]uit"])
             else:
-                options = ["[L]ink", "[C]hange"]
-                if security_exists:
-                    options.append("[A]ctivity")
-                options.extend(["[B]ack", "[Q]uit"])
+                # Unlocked notebook - full options
+                if has_remote:
+                    options = ["[V]isibility", "[S]ync", "[D]elete", "[C]hange"]
+                    if security_exists:
+                        options.append("[A]ctivity")
+                    options.extend(["[B]ack", "[Q]uit"])
+                else:
+                    options = ["[L]ink", "[C]hange"]
+                    if security_exists:
+                        options.append("[A]ctivity")
+                    options.extend(["[B]ack", "[Q]uit"])
             # ========== END FIX ==========
             
             self.print_footer("  ".join(options))
             
             cmd = self.get_input("> ").strip().lower()
             
-            # Handle single letter commands
+            # ========== Block remote commands for locked notebooks ==========
+            if is_locked:
+                # Only allow [c]hange, [a]ctivity, [b]ack, [q]uit
+                if cmd == "c":
+                    self._show_change_options(notebook, has_remote)
+                elif cmd == "a":
+                    self.show_security_activity(notebook)
+                elif cmd == "b":
+                    break
+                elif cmd == "q" or cmd == "qy":
+                    if cmd == "qy":
+                        self.clear_screen()
+                        if self.is_standalone:
+                            sys.exit(0)
+                        else:
+                            return "exit_app"
+                    else:
+                        if self.is_standalone:
+                            confirm = self.get_input("Quit Notebook Manager? [y/N]: ").lower()
+                            if confirm == "y":
+                                self.clear_screen()
+                                sys.exit(0)
+                        else:
+                            confirm = self.get_input("Quit Terminal Notes? [y/N]: ").lower()
+                            if confirm == "y":
+                                self.clear_screen()
+                                return "exit_app"
+                else:
+                    print(f"Invalid command. Available options: {', '.join(options)}")
+                    self.get_input("Press Enter to continue...")
+                continue
+            # ========== END FIX ==========
+            
+            # Handle single letter commands for unlocked notebooks
             if cmd == "b":
                 break
             
@@ -2088,10 +2209,6 @@ class NotebookManager:
             elif cmd == "v" and has_remote:
                 self.toggle_visibility(notebook)
             
-            # ========== FIX: Remove test connection handler ==========
-            # Test button removed - no 't' handler needed
-            # ========== END FIX ==========
-            
             elif cmd == "s" and has_remote:
                 self.sync_notebook(notebook)
             
@@ -2102,7 +2219,6 @@ class NotebookManager:
                 self.show_security_activity(notebook)
             
             # Handle commands with numbers
-            # ========== FIX: Remove 't' from numbered command list ==========
             elif len(cmd) > 1 and cmd[0] in ['v', 's', 'd', 'a', 'c', 'l']:
                 try:
                     num = int(cmd[1:])
@@ -2121,7 +2237,6 @@ class NotebookManager:
                 except ValueError:
                     print(f"Invalid command format. Use {cmd[0]} or {cmd[0]}#")
                     self.get_input("Press Enter to continue...")
-            # ========== END FIX ==========
             
             elif cmd == "q" or cmd == "qy":
                 if cmd == "qy":
@@ -2552,7 +2667,7 @@ class NotebookManager:
             # ========== END FIX ==========
             
             print(f"\nNext steps:")
-            print(f"1. Use [P]ush to create the repository on GitHub and push your notebook")
+            print(f"1. Use [S]ync to create the repository on GitHub and push your notebook")
             print(f"2. The repository will be created as {'🔒 PRIVATE' if visibility == 'private' else '🔓 PUBLIC'}")
             print(f"3. You can change visibility anytime with the [V]isibility button")
             notebook['git_config'] = self.get_notebook_config(notebook['id'])
@@ -2644,73 +2759,33 @@ class NotebookManager:
             subprocess.run(["git", "init"], cwd=path, capture_output=True)
             print("  Git repository initialized.")
         
-        # Step 4: Check if remote exists and has commits
-        remote_exists = False
-        remote_has_commits = False
+        # Step 4: Build auth URL for git operations
+        auth_url = self.build_repo_url(account, repo_name).replace(
+            "https://", f"https://{account['username']}:{token}@"
+        )
         
-        # Check if remote origin exists
+        # Step 5: Check if remote repository EXISTS on GitHub
+        print("\n  Checking if repository exists on GitHub...", end="", flush=True)
+        repo_exists_on_github = self.repo_exists(account, repo_name, token)
+        if repo_exists_on_github:
+            print(" YES")
+        else:
+            print(" NO")
+        
+        # Step 6: Set up git remote if needed
         remote_result = subprocess.run(
             ["git", "remote", "get-url", "origin"],
             cwd=path,
             capture_output=True,
             text=True
         )
-        remote_exists = (remote_result.returncode == 0)
+        remote_configured = (remote_result.returncode == 0)
         
-        # If remote exists, check if it has any commits
-        if remote_exists:
-            ls_remote_result = subprocess.run(
-                ["git", "ls-remote", "origin", "HEAD"],
-                cwd=path,
-                capture_output=True,
-                text=True
-            )
-            remote_has_commits = (ls_remote_result.returncode == 0 and ls_remote_result.stdout.strip())
-        
-        # Step 5: Build auth URL for git operations
-        auth_url = self.build_repo_url(account, repo_name).replace(
-            "https://", f"https://{account['username']}:{token}@"
-        )
-        
-        # Set up remote if it doesn't exist
-        if not remote_exists:
+        if not remote_configured:
             subprocess.run(["git", "remote", "add", "origin", auth_url], cwd=path, capture_output=True)
-            remote_exists = True
+            remote_configured = True
         
-        # Step 6: Fetch remote to compare commits
-        fetch_result = subprocess.run(
-            ["git", "fetch", "origin"],
-            cwd=path,
-            capture_output=True,
-            text=True
-        )
-        
-        # Step 7: Count commits ahead/behind (only if remote has commits)
-        ahead = 0
-        behind = 0
-        
-        if remote_has_commits:
-            # Count commits local has that remote doesn't (ahead)
-            ahead_result = subprocess.run(
-                ["git", "rev-list", "origin/master..master", "--count"],
-                cwd=path,
-                capture_output=True,
-                text=True
-            )
-            if ahead_result.returncode == 0 and ahead_result.stdout.strip():
-                ahead = int(ahead_result.stdout.strip())
-            
-            # Count commits remote has that local doesn't (behind)
-            behind_result = subprocess.run(
-                ["git", "rev-list", "master..origin/master", "--count"],
-                cwd=path,
-                capture_output=True,
-                text=True
-            )
-            if behind_result.returncode == 0 and behind_result.stdout.strip():
-                behind = int(behind_result.stdout.strip())
-        
-        # Step 8: Get total commit count (for new repo)
+        # Step 7: Get commit counts
         total_commits_result = subprocess.run(
             ["git", "rev-list", "--count", "HEAD"],
             cwd=path,
@@ -2719,45 +2794,40 @@ class NotebookManager:
         )
         total_commits = int(total_commits_result.stdout.strip()) if total_commits_result.returncode == 0 else 0
         
-        # Step 9: Determine sync state and show description
-        state = self._get_sync_state(remote_exists, remote_has_commits, ahead, behind, total_commits)
-        
-        self.clear_screen()
-        width, _ = self.get_terminal_size()
-        
-        print("" * width)
-        print(f"SYNC NOTEBOOK".center(width))
-        print("" * width)
-        print()
-        
-        # Show description based on state
-        if state == "no_remote":
-            print(f"  Status: No remote repository found.")
+        # Step 8: If repository doesn't exist on GitHub, create it
+        if not repo_exists_on_github:
+            self.clear_screen()
+            width, _ = self.get_terminal_size()
+            
+            print("" * width)
+            print(f"SYNC NOTEBOOK".center(width))
+            print("" * width)
+            print()
+            print(f"  Status: No remote repository found on {account.get('platform', 'github').capitalize()}.")
             print()
             print(f"  What will happen:")
-            print(f"  • Create new {'private' if git_config.get('visibility', 'private') == 'private' else 'public'} repository on {account.get('platform', 'github').capitalize()}")
+            print(f"  • Create new {'private' if git_config.get('visibility', 'private') == 'private' else 'public'} repository")
             print(f"    Name: {repo_name}")
-            print(f"  • Push all {total_commits} commits to the remote")
+            print(f"  • Push all {total_commits} commit(s) to the remote")
             print(f"  • Link this notebook to the repository")
             print()
             print(f"  Proceed? [y/N]: ", end="")
             confirm = input().strip().lower()
+            
             if confirm != 'y':
                 print("\n  Sync cancelled.")
                 self.get_input("\nPress Enter to continue...")
                 return
             
-            # Create repository
             print(f"\n  Creating repository on {account.get('platform', 'github').capitalize()}...", end="", flush=True)
-            if not self.repo_exists(account, repo_name, token):
-                if not self.create_repo(account, repo_name, token, git_config.get("visibility", "private")):
-                    print(" FAILED")
-                    print("\n  Could not create repository. Check your token permissions.")
-                    self.get_input("\nPress Enter to continue...")
-                    return
+            if not self.create_repo(account, repo_name, token, git_config.get("visibility", "private")):
+                print(" FAILED")
+                print("\n  Could not create repository. Check your token permissions.")
+                self.get_input("\nPress Enter to continue...")
+                return
             print(" OK")
             
-            # Push
+            # Push after creating repo
             print("  Pushing commits...", end="", flush=True)
             branch_result = subprocess.run(
                 ["git", "rev-parse", "--abbrev-ref", "HEAD"],
@@ -2789,9 +2859,53 @@ class NotebookManager:
                     break
             
             print(f"\n  Sync complete!")
-            print(f"  Created repository and pushed {total_commits} commits.")
-            
-        elif state == "push_only":
+            print(f"  Created repository and pushed {total_commits} commit(s).")
+            self.get_input("\nPress Enter to continue...")
+            return
+        
+        # Step 9: Repository exists - fetch and compare
+        print("  Fetching remote changes...", end="", flush=True)
+        fetch_result = subprocess.run(
+            ["git", "fetch", "origin"],
+            cwd=path,
+            capture_output=True,
+            text=True
+        )
+        print(" OK")
+        
+        # Count commits ahead/behind
+        ahead = 0
+        behind = 0
+        
+        ahead_result = subprocess.run(
+            ["git", "rev-list", "origin/master..master", "--count"],
+            cwd=path,
+            capture_output=True,
+            text=True
+        )
+        if ahead_result.returncode == 0 and ahead_result.stdout.strip():
+            ahead = int(ahead_result.stdout.strip())
+        
+        behind_result = subprocess.run(
+            ["git", "rev-list", "master..origin/master", "--count"],
+            cwd=path,
+            capture_output=True,
+            text=True
+        )
+        if behind_result.returncode == 0 and behind_result.stdout.strip():
+            behind = int(behind_result.stdout.strip())
+        
+        # Step 10: Determine state and show appropriate description
+        self.clear_screen()
+        width, _ = self.get_terminal_size()
+        
+        print("" * width)
+        print(f"SYNC NOTEBOOK".center(width))
+        print("" * width)
+        print()
+        
+        # Case: Push only
+        if ahead > 0 and behind == 0:
             print(f"  Status: Your local notebook has {ahead} commit(s)")
             print(f"          that are not on {account.get('platform', 'github').capitalize()}.")
             print()
@@ -2800,6 +2914,7 @@ class NotebookManager:
             print()
             print(f"  Proceed? [y/N]: ", end="")
             confirm = input().strip().lower()
+            
             if confirm != 'y':
                 print("\n  Sync cancelled.")
                 self.get_input("\nPress Enter to continue...")
@@ -2828,7 +2943,6 @@ class NotebookManager:
                 return
             print(" OK")
             
-            # Update last_push timestamp
             for acc_id, acc in self.accounts["accounts"].items():
                 if notebook['id'] in acc.get("notebooks", {}):
                     acc["notebooks"][notebook['id']]["last_push"] = datetime.now().isoformat()
@@ -2837,8 +2951,9 @@ class NotebookManager:
             
             print(f"\n  Sync complete!")
             print(f"  Pushed {ahead} commit(s).")
-            
-        elif state == "pull_only":
+        
+        # Case: Pull only
+        elif ahead == 0 and behind > 0:
             print(f"  Status: Remote has {behind} commit(s) that are not")
             print(f"          in your local notebook.")
             print()
@@ -2847,6 +2962,7 @@ class NotebookManager:
             print()
             print(f"  Proceed? [y/N]: ", end="")
             confirm = input().strip().lower()
+            
             if confirm != 'y':
                 print("\n  Sync cancelled.")
                 self.get_input("\nPress Enter to continue...")
@@ -2869,8 +2985,9 @@ class NotebookManager:
             
             print(f"\n  Sync complete!")
             print(f"  Pulled {behind} commit(s).")
-            
-        elif state == "pull_then_push":
+        
+        # Case: Pull then Push (diverged)
+        elif ahead > 0 and behind > 0:
             print(f"  Status: Local has {ahead} commit(s), Remote has {behind} commit(s)")
             print(f"          Both have changes not in the other.")
             print()
@@ -2880,6 +2997,7 @@ class NotebookManager:
             print()
             print(f"  Proceed? [y/N]: ", end="")
             confirm = input().strip().lower()
+            
             if confirm != 'y':
                 print("\n  Sync cancelled.")
                 self.get_input("\nPress Enter to continue...")
@@ -2923,7 +3041,6 @@ class NotebookManager:
                 return
             print(" OK")
             
-            # Update last_push timestamp
             for acc_id, acc in self.accounts["accounts"].items():
                 if notebook['id'] in acc.get("notebooks", {}):
                     acc["notebooks"][notebook['id']]["last_push"] = datetime.now().isoformat()
@@ -2932,56 +3049,18 @@ class NotebookManager:
             
             print(f"\n  Sync complete!")
             print(f"  Pulled {behind} commit(s) and pushed {ahead} commit(s).")
-            
-        elif state == "already_synced":
+        
+        # Case: Already synced
+        elif ahead == 0 and behind == 0:
             print(f"  Status: Local and remote are already in sync.")
             print()
             print(f"  No actions needed.")
-            
+        
+        # Case: Unknown (fallback)
         else:
-            # Fallback - just push
             print(f"  Status: Unable to determine sync state.")
             print()
-            print(f"  What will happen:")
-            print(f"  • Push all commits to the remote")
-            print()
-            print(f"  Proceed? [y/N]: ", end="")
-            confirm = input().strip().lower()
-            if confirm != 'y':
-                print("\n  Sync cancelled.")
-                self.get_input("\nPress Enter to continue...")
-                return
-            
-            print(f"\n  Pushing commits...", end="", flush=True)
-            branch_result = subprocess.run(
-                ["git", "rev-parse", "--abbrev-ref", "HEAD"],
-                cwd=path,
-                capture_output=True,
-                text=True
-            )
-            current_branch = branch_result.stdout.strip() if branch_result.returncode == 0 else "master"
-            
-            push_result = subprocess.run(
-                ["git", "push", "origin", f"{current_branch}:{current_branch}"],
-                cwd=path,
-                capture_output=True,
-                text=True
-            )
-            
-            if push_result.returncode != 0:
-                print(" FAILED")
-                print(f"\n  Push failed: {push_result.stderr[:200]}")
-                self.get_input("\nPress Enter to continue...")
-                return
-            print(" OK")
-            
-            for acc_id, acc in self.accounts["accounts"].items():
-                if notebook['id'] in acc.get("notebooks", {}):
-                    acc["notebooks"][notebook['id']]["last_push"] = datetime.now().isoformat()
-                    self.save_accounts()
-                    break
-            
-            print(f"\n  Sync complete!")
+            print(f"  No actions performed. Please check your repository manually.")
         
         self.get_input("\nPress Enter to continue...")
 
@@ -3083,6 +3162,65 @@ class NotebookManager:
             else:
                 print("\n  Invalid choice. Press Enter to continue...")
                 self.get_input("> ")
+    
+    def repo_exists(self, account, repo_name, token):
+        """Check if repository exists on remote"""
+        import urllib.request
+        import urllib.error
+        import json
+        
+        # Determine platform
+        platform = account.get('platform', 'github')
+        username = account.get('username', '')
+        
+        if platform == 'github':
+            url = f"https://api.github.com/repos/{username}/{repo_name}"
+            headers = {
+                'Authorization': f'token {token}',
+                'Accept': 'application/vnd.github.v3+json',
+                'User-Agent': 'Terminal-Notes/1.0'
+            }
+            
+            try:
+                req = urllib.request.Request(url, headers=headers)
+                with urllib.request.urlopen(req, timeout=10) as response:
+                    return response.status == 200
+            except urllib.error.HTTPError as e:
+                if e.code == 404:
+                    return False
+                return False
+            except Exception:
+                return False
+                
+        elif platform == 'gitlab':
+            url = f"https://gitlab.com/api/v4/projects/{username}%2F{repo_name}"
+            headers = {'Authorization': f'Bearer {token}'}
+            
+            try:
+                req = urllib.request.Request(url, headers=headers)
+                with urllib.request.urlopen(req, timeout=10) as response:
+                    return response.status == 200
+            except urllib.error.HTTPError as e:
+                if e.code == 404:
+                    return False
+                return False
+            except Exception:
+                return False
+        
+        else:
+            # For other platforms, try git ls-remote
+            repo_url = account.get('url', '')
+            if repo_url:
+                import subprocess
+                result = subprocess.run(
+                    ['git', 'ls-remote', '--heads', repo_url],
+                    capture_output=True,
+                    text=True,
+                    timeout=10
+                )
+                return result.returncode == 0
+        
+        return False
 
     def _delete_remote_repository(self, notebook, account, repo_name, full_name):
         """Delete remote repository only"""
