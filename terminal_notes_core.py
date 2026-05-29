@@ -1142,10 +1142,22 @@ class NoteManager:
             if notebook_path and not os.path.isabs(notebook_path):
                 notebook_path = os.path.join(self.notebooks_root, notebook_path)
 
-            if not notebook_path or not os.path.exists(notebook_path):
+            # ========== FIX: Don't skip if path doesn't exist - show as locked placeholder ==========
+            path_exists = notebook_path and os.path.exists(notebook_path)
+            if not path_exists:
                 if not quiet:
-                    print(f"  ⚠ Notebook {notebook_id} not found at: {notebook_path}")
+                    print(f"  ⚠ Notebook {notebook_id} folder not found at: {notebook_path}")
+                # Still create a locked placeholder
+                actual_name = notebook_data.get("name", "Unknown")
+                notebook = Notebook(actual_name, notebook_id=notebook_id)
+                notebook.locked = True
+                notebook.custom_path = None
+                self.notebooks.append(notebook)
+                self.encrypted_notebooks.add(notebook_id)
+                if not quiet:
+                    print(f"  🔒 Loaded (locked - folder missing): {notebook.name}")
                 continue
+            # ========== END FIX ==========
             
             # Check if encrypted
             is_encrypted = os.path.exists(os.path.join(notebook_path, ".tn_test"))
@@ -1157,16 +1169,37 @@ class NoteManager:
                 if not entry_uuid:
                     if not quiet:
                         print(f"  ⚠ No entry UUID for notebook {notebook_id}")
+                    # ========== FIX: Add as locked notebook ==========
+                    actual_name = notebook_data.get("name", "Unknown")
+                    notebook = Notebook(actual_name, notebook_id=notebook_id)
+                    notebook.locked = True
+                    notebook.custom_path = None
+                    self.notebooks.append(notebook)
+                    self.encrypted_notebooks.add(notebook_id)
+                    if not quiet:
+                        print(f"  🔒 Loaded (locked - no UUID): {notebook.name}")
                     continue
+                    # ========== END FIX ==========
                 
                 vault_path = vault_registry.get(vault_name)
                 if not vault_path:
                     vault_path = self.vault_manager.get_vault_path(vault_name)
                 
+                # ========== FIX: Vault missing - show as locked, don't skip ==========
                 if not vault_path or not os.path.exists(vault_path):
                     if not quiet:
                         print(f"  ⚠ Vault {vault_name} not accessible for notebook {notebook_id}")
+                    # Add as locked notebook instead of skipping
+                    actual_name = notebook_data.get("name", "Unknown")
+                    notebook = Notebook(actual_name, notebook_id=notebook_id)
+                    notebook.locked = True
+                    notebook.custom_path = None
+                    self.notebooks.append(notebook)
+                    self.encrypted_notebooks.add(notebook_id)
+                    if not quiet:
+                        print(f"  🔒 Loaded (locked - vault missing): {notebook.name}")
                     continue
+                # ========== END FIX ==========
                 
                 if is_locked:
                     # Get the actual notebook name from registry, not from folder
@@ -1189,7 +1222,17 @@ class NoteManager:
                 if not entry_data:
                     if not quiet:
                         print(f"  ⚠ Entry {entry_uuid} not found in vault for notebook {notebook_id}")
+                    # ========== FIX: Add as locked notebook ==========
+                    actual_name = notebook_data.get("name", "Unknown")
+                    notebook = Notebook(actual_name, notebook_id=notebook_id)
+                    notebook.locked = True
+                    notebook.custom_path = None
+                    self.notebooks.append(notebook)
+                    self.encrypted_notebooks.add(notebook_id)
+                    if not quiet:
+                        print(f"  🔒 Loaded (locked - entry missing): {notebook.name}")
                     continue
+                    # ========== END FIX ==========
                 
                 try:
                     from cryptography.hazmat.primitives.ciphers.aead import AESGCM
@@ -1220,9 +1263,28 @@ class NoteManager:
                     else:
                         if not quiet:
                             print(f"  ✗ Failed to load notebook {notebook_id}")
+                        # ========== FIX: Add as locked placeholder ==========
+                        notebook = Notebook(actual_name, notebook_id=notebook_id)
+                        notebook.locked = True
+                        notebook.custom_path = None
+                        self.notebooks.append(notebook)
+                        self.encrypted_notebooks.add(notebook_id)
+                        if not quiet:
+                            print(f"  🔒 Loaded (locked - load failed): {notebook.name}")
+                        # ========== END FIX ==========
                 except Exception as e:
                     if not quiet:
                         print(f"  ✗ Failed to decrypt notebook {notebook_id}: {e}")
+                    # ========== FIX: Add as locked placeholder on decryption error ==========
+                    actual_name = notebook_data.get("name", "Unknown")
+                    notebook = Notebook(actual_name, notebook_id=notebook_id)
+                    notebook.locked = True
+                    notebook.custom_path = None
+                    self.notebooks.append(notebook)
+                    self.encrypted_notebooks.add(notebook_id)
+                    if not quiet:
+                        print(f"  🔒 Loaded (locked - decrypt failed): {notebook.name}")
+                    # ========== END FIX ==========
             else:
                 # Unencrypted notebook
                 notebook = self._load_notebook_from_path(notebook_path)
@@ -1232,6 +1294,16 @@ class NoteManager:
                     self.notebooks.append(notebook)
                     if not quiet:
                         print(f"  ✓ Loaded (unencrypted): {notebook.name}")
+                else:
+                    # ========== FIX: Even unencrypted notebooks that fail to load get a placeholder ==========
+                    actual_name = notebook_data.get("name", "Unknown")
+                    notebook = Notebook(actual_name, notebook_id=notebook_id)
+                    notebook.locked = True
+                    notebook.custom_path = None
+                    self.notebooks.append(notebook)
+                    if not quiet:
+                        print(f"  🔒 Loaded (locked - unencrypted load failed): {notebook.name}")
+                    # ========== END FIX ==========
         
         # Save registry if autolock updated any entries
         if registry_updated:

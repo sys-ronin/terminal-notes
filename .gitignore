@@ -1,5 +1,5 @@
 !*.py
-
+!/documents/*.md
 notebooks_root/
 
 !/config/config.txt

@@ -1031,7 +1031,7 @@ class TerminalNotes:
             
             # Handle single 'm' command (notebooks exist)
             if cmd == 'm':
-                choice = self.get_input("Number or f for full manager: ").strip().lower()
+                choice = self.get_input("Number or f: ").strip().lower()
                 if not choice:
                     return "continue"
                 if choice == 'f':
@@ -2135,6 +2135,7 @@ class TerminalNotes:
 
             print()
             print(left_part + page_text + right_part)
+            print()
         else:
             print()
 
@@ -2152,7 +2153,7 @@ class TerminalNotes:
                 footer_options.append("[P]rev")
         footer_options.append("[Q]uit")
 
-        print("" * terminal_width)
+        #print("" * terminal_width)
         print("  ".join(footer_options))
         print()
 
@@ -2487,8 +2488,8 @@ class TerminalNotes:
 
         # Show subnotebooks section
         if notebook.subnotebooks:
-            if len(paginated_notes) == 0 or notes_total_pages <= 1:
-                print()
+            #if len(paginated_notes) == 0 or notes_total_pages <= 1:
+            #   print()
         
             next_number = len(paginated_notes) + 1
             sub_count = len(notebook.subnotebooks)

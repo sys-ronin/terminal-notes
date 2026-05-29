@@ -4481,10 +4481,12 @@ class RepoFilter(object):
 
     # Now remove the origin remote
     url = self._config_settings[b'remote.origin.url'].decode(errors='replace')
-    m = _("NOTICE: Removing 'origin' remote; see 'Why is my origin removed?'\n"
-          "        in the manual if you want to push back there.\n"
-          "        (was %s)") % url
-    print(m)
+    # ========== DISABLE NOTICE ==========
+    # m = _("NOTICE: Removing 'origin' remote; see 'Why is my origin removed?'\n"
+    #       "        in the manual if you want to push back there.\n"
+    #       "        (was %s)") % url
+    # print(m)
+    # ========== END DISABLE ==========
     subproc.call('git remote rm origin'.split(), cwd=target_working_dir)
 
   def _final_commands(self):

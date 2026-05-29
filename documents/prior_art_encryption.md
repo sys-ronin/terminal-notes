@@ -526,6 +526,6 @@ This disclosure is made in the public interest. No legal advice is offered. No w
 
 **sys_ronin**  
 May 2026  
-sys-ronin@protonmail.com  
+sys_ronin@protonmail.com  
 github.com/sys-ronin/terminal-notes
 ```

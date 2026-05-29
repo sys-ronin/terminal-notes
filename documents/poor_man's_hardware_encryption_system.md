@@ -299,5 +299,5 @@ This is not a theoretical proposal. It is implemented, tested, and used daily. T
 
 **sys_ronin**  
 May 2026  
-sys-ronin@protonmail.com
+sys_ronin@protonmail.com
 ```

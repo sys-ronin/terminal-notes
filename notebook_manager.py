@@ -1621,7 +1621,7 @@ class NotebookManager:
             
             print("\n  ✓ Import successful!")
             print(f"  Notebook: {notebook_id[:8]}...")
-            print("  Use [P]ush to sync changes to remote.")
+            print("  Use [S]ync to changes to remote.")
             
             # Reload notebooks in main app
             if hasattr(self.manager, 'load_all_notebooks'):
@@ -2124,7 +2124,7 @@ class NotebookManager:
                         pass
             else:
                 if is_locked:
-                    print(f"{platform_display}: Locked - unlock to use")
+                    print(f"{platform_display}: Locked - unlock to see status")
                 else:
                     print(f"{platform_display}: Not configured")
             
@@ -2703,383 +2703,18 @@ class NotebookManager:
         return result.returncode == 0 or "204" in result.stderr
     
     def sync_notebook(self, notebook):
-        """Smart sync - detects state and acts accordingly (pull + push)"""
-        self.clear_screen()
-        
-        git_config = notebook.get("git_config")
-        account = notebook.get("account")
-        
-        if not git_config or not account:
-            print("  Not configured with a remote repository.")
-            print("  Use [C]hange -> Link to configure first.")
-            self.get_input("\nPress Enter to continue...")
-            return
-        
-        path = notebook.get('path')
-        if not path or not os.path.exists(path):
-            print("  Notebook path not found.")
-            self.get_input("\nPress Enter to continue...")
-            return
-        
-        folder_name = os.path.basename(path)
-        if folder_name.endswith('.git'):
-            folder_name = folder_name[:-4]
-        repo_name = folder_name
-        
-        token = self._decrypt_token(account['token_enc'])
-        if not token:
-            print("  Could not decrypt account token.")
-            print("  Please re-add your account.")
-            self.get_input("\nPress Enter to continue...")
-            return
-        
-        # Step 1: Check internet
-        print("  Checking internet connection...", end="", flush=True)
-        if not self.has_internet():
-            print(" FAILED")
-            print("\n  No internet connection. Please check your network.")
-            self.get_input("\nPress Enter to continue...")
-            return
-        print(" OK")
-        
-        # Step 2: Validate token
-        print("  Validating account token...", end="", flush=True)
-        if not self.check_token_valid(account, token):
-            print(" INVALID")
-            print("\n  Account token is invalid or expired.")
-            print("  Please re-add your account.")
-            self.get_input("\nPress Enter to continue...")
-            return
-        print(" OK")
-        
-        # Step 3: Check if Git repo is initialized
-        git_dir = os.path.join(path, ".git")
-        if not os.path.exists(git_dir):
-            print("\n  Initializing git repository...")
-            subprocess.run(["git", "init"], cwd=path, capture_output=True)
-            print("  Git repository initialized.")
-        
-        # Step 4: Build auth URL for git operations
-        auth_url = self.build_repo_url(account, repo_name).replace(
-            "https://", f"https://{account['username']}:{token}@"
-        )
-        
-        # Step 5: Check if remote repository EXISTS on GitHub
-        print("\n  Checking if repository exists on GitHub...", end="", flush=True)
-        repo_exists_on_github = self.repo_exists(account, repo_name, token)
-        if repo_exists_on_github:
-            print(" YES")
-        else:
-            print(" NO")
-        
-        # Step 6: Set up git remote if needed
-        remote_result = subprocess.run(
-            ["git", "remote", "get-url", "origin"],
-            cwd=path,
-            capture_output=True,
-            text=True
-        )
-        remote_configured = (remote_result.returncode == 0)
-        
-        if not remote_configured:
-            subprocess.run(["git", "remote", "add", "origin", auth_url], cwd=path, capture_output=True)
-            remote_configured = True
-        
-        # Step 7: Get commit counts
-        total_commits_result = subprocess.run(
-            ["git", "rev-list", "--count", "HEAD"],
-            cwd=path,
-            capture_output=True,
-            text=True
-        )
-        total_commits = int(total_commits_result.stdout.strip()) if total_commits_result.returncode == 0 else 0
-        
-        # Step 8: If repository doesn't exist on GitHub, create it
-        if not repo_exists_on_github:
-            self.clear_screen()
-            width, _ = self.get_terminal_size()
-            
-            print("" * width)
-            print(f"SYNC NOTEBOOK".center(width))
-            print("" * width)
-            print()
-            print(f"  Status: No remote repository found on {account.get('platform', 'github').capitalize()}.")
-            print()
-            print(f"  What will happen:")
-            print(f"  • Create new {'private' if git_config.get('visibility', 'private') == 'private' else 'public'} repository")
-            print(f"    Name: {repo_name}")
-            print(f"  • Push all {total_commits} commit(s) to the remote")
-            print(f"  • Link this notebook to the repository")
-            print()
-            print(f"  Proceed? [y/N]: ", end="")
-            confirm = input().strip().lower()
-            
-            if confirm != 'y':
-                print("\n  Sync cancelled.")
-                self.get_input("\nPress Enter to continue...")
-                return
-            
-            print(f"\n  Creating repository on {account.get('platform', 'github').capitalize()}...", end="", flush=True)
-            if not self.create_repo(account, repo_name, token, git_config.get("visibility", "private")):
-                print(" FAILED")
-                print("\n  Could not create repository. Check your token permissions.")
-                self.get_input("\nPress Enter to continue...")
-                return
-            print(" OK")
-            
-            # Push after creating repo
-            print("  Pushing commits...", end="", flush=True)
-            branch_result = subprocess.run(
-                ["git", "rev-parse", "--abbrev-ref", "HEAD"],
-                cwd=path,
-                capture_output=True,
-                text=True
-            )
-            current_branch = branch_result.stdout.strip() if branch_result.returncode == 0 else "master"
-            
-            push_result = subprocess.run(
-                ["git", "push", "-u", "origin", f"{current_branch}:{current_branch}"],
-                cwd=path,
-                capture_output=True,
-                text=True
-            )
-            
-            if push_result.returncode != 0:
-                print(" FAILED")
-                print(f"\n  Push failed: {push_result.stderr[:200]}")
-                self.get_input("\nPress Enter to continue...")
-                return
-            print(" OK")
-            
-            # Update last_push timestamp
-            for acc_id, acc in self.accounts["accounts"].items():
-                if notebook['id'] in acc.get("notebooks", {}):
-                    acc["notebooks"][notebook['id']]["last_push"] = datetime.now().isoformat()
-                    self.save_accounts()
-                    break
-            
-            print(f"\n  Sync complete!")
-            print(f"  Created repository and pushed {total_commits} commit(s).")
-            self.get_input("\nPress Enter to continue...")
-            return
-        
-        # Step 9: Repository exists - fetch and compare
-        print("  Fetching remote changes...", end="", flush=True)
-        fetch_result = subprocess.run(
-            ["git", "fetch", "origin"],
-            cwd=path,
-            capture_output=True,
-            text=True
-        )
-        print(" OK")
-        
-        # Count commits ahead/behind
-        ahead = 0
-        behind = 0
-        
-        ahead_result = subprocess.run(
-            ["git", "rev-list", "origin/master..master", "--count"],
-            cwd=path,
-            capture_output=True,
-            text=True
-        )
-        if ahead_result.returncode == 0 and ahead_result.stdout.strip():
-            ahead = int(ahead_result.stdout.strip())
-        
-        behind_result = subprocess.run(
-            ["git", "rev-list", "master..origin/master", "--count"],
-            cwd=path,
-            capture_output=True,
-            text=True
-        )
-        if behind_result.returncode == 0 and behind_result.stdout.strip():
-            behind = int(behind_result.stdout.strip())
-        
-        # Step 10: Determine state and show appropriate description
-        self.clear_screen()
-        width, _ = self.get_terminal_size()
-        
-        print("" * width)
-        print(f"SYNC NOTEBOOK".center(width))
-        print("" * width)
-        print()
-        
-        # Case: Push only
-        if ahead > 0 and behind == 0:
-            print(f"  Status: Your local notebook has {ahead} commit(s)")
-            print(f"          that are not on {account.get('platform', 'github').capitalize()}.")
-            print()
-            print(f"  What will happen:")
-            print(f"  • Push {ahead} commit(s) to the remote")
-            print()
-            print(f"  Proceed? [y/N]: ", end="")
-            confirm = input().strip().lower()
-            
-            if confirm != 'y':
-                print("\n  Sync cancelled.")
-                self.get_input("\nPress Enter to continue...")
-                return
-            
-            print(f"\n  Pushing {ahead} commit(s)...", end="", flush=True)
-            branch_result = subprocess.run(
-                ["git", "rev-parse", "--abbrev-ref", "HEAD"],
-                cwd=path,
-                capture_output=True,
-                text=True
-            )
-            current_branch = branch_result.stdout.strip() if branch_result.returncode == 0 else "master"
-            
-            push_result = subprocess.run(
-                ["git", "push", "origin", f"{current_branch}:{current_branch}"],
-                cwd=path,
-                capture_output=True,
-                text=True
-            )
-            
-            if push_result.returncode != 0:
-                print(" FAILED")
-                print(f"\n  Push failed: {push_result.stderr[:200]}")
-                self.get_input("\nPress Enter to continue...")
-                return
-            print(" OK")
-            
-            for acc_id, acc in self.accounts["accounts"].items():
-                if notebook['id'] in acc.get("notebooks", {}):
-                    acc["notebooks"][notebook['id']]["last_push"] = datetime.now().isoformat()
-                    self.save_accounts()
-                    break
-            
-            print(f"\n  Sync complete!")
-            print(f"  Pushed {ahead} commit(s).")
-        
-        # Case: Pull only
-        elif ahead == 0 and behind > 0:
-            print(f"  Status: Remote has {behind} commit(s) that are not")
-            print(f"          in your local notebook.")
-            print()
-            print(f"  What will happen:")
-            print(f"  • Pull {behind} commit(s) from the remote")
-            print()
-            print(f"  Proceed? [y/N]: ", end="")
-            confirm = input().strip().lower()
-            
-            if confirm != 'y':
-                print("\n  Sync cancelled.")
-                self.get_input("\nPress Enter to continue...")
-                return
-            
-            print(f"\n  Pulling {behind} commit(s)...", end="", flush=True)
-            pull_result = subprocess.run(
-                ["git", "pull", "--rebase", "origin", "master"],
-                cwd=path,
-                capture_output=True,
-                text=True
-            )
-            
-            if pull_result.returncode != 0:
-                print(" FAILED")
-                print(f"\n  Pull failed: {pull_result.stderr[:200]}")
-                self.get_input("\nPress Enter to continue...")
-                return
-            print(" OK")
-            
-            print(f"\n  Sync complete!")
-            print(f"  Pulled {behind} commit(s).")
-        
-        # Case: Pull then Push (diverged)
-        elif ahead > 0 and behind > 0:
-            print(f"  Status: Local has {ahead} commit(s), Remote has {behind} commit(s)")
-            print(f"          Both have changes not in the other.")
-            print()
-            print(f"  What will happen:")
-            print(f"  • Pull {behind} commit(s) from the remote")
-            print(f"  • Then push your {ahead} commit(s)")
-            print()
-            print(f"  Proceed? [y/N]: ", end="")
-            confirm = input().strip().lower()
-            
-            if confirm != 'y':
-                print("\n  Sync cancelled.")
-                self.get_input("\nPress Enter to continue...")
-                return
-            
-            print(f"\n  Pulling {behind} commit(s)...", end="", flush=True)
-            pull_result = subprocess.run(
-                ["git", "pull", "--rebase", "origin", "master"],
-                cwd=path,
-                capture_output=True,
-                text=True
-            )
-            
-            if pull_result.returncode != 0:
-                print(" FAILED")
-                print(f"\n  Pull failed: {pull_result.stderr[:200]}")
-                self.get_input("\nPress Enter to continue...")
-                return
-            print(" OK")
-            
-            print(f"  Pushing {ahead} commit(s)...", end="", flush=True)
-            branch_result = subprocess.run(
-                ["git", "rev-parse", "--abbrev-ref", "HEAD"],
-                cwd=path,
-                capture_output=True,
-                text=True
-            )
-            current_branch = branch_result.stdout.strip() if branch_result.returncode == 0 else "master"
-            
-            push_result = subprocess.run(
-                ["git", "push", "origin", f"{current_branch}:{current_branch}"],
-                cwd=path,
-                capture_output=True,
-                text=True
-            )
-            
-            if push_result.returncode != 0:
-                print(" FAILED")
-                print(f"\n  Push failed: {push_result.stderr[:200]}")
-                self.get_input("\nPress Enter to continue...")
-                return
-            print(" OK")
-            
-            for acc_id, acc in self.accounts["accounts"].items():
-                if notebook['id'] in acc.get("notebooks", {}):
-                    acc["notebooks"][notebook['id']]["last_push"] = datetime.now().isoformat()
-                    self.save_accounts()
-                    break
-            
-            print(f"\n  Sync complete!")
-            print(f"  Pulled {behind} commit(s) and pushed {ahead} commit(s).")
-        
-        # Case: Already synced
-        elif ahead == 0 and behind == 0:
-            print(f"  Status: Local and remote are already in sync.")
-            print()
-            print(f"  No actions needed.")
-        
-        # Case: Unknown (fallback)
-        else:
-            print(f"  Status: Unable to determine sync state.")
-            print()
-            print(f"  No actions performed. Please check your repository manually.")
-        
-        self.get_input("\nPress Enter to continue...")
+        """Thin wrapper – delegates to NotebookSync"""
+        from notebook_sync import NotebookSync
+        syncer = NotebookSync(self.manager, self.accounts, self.app_dir,
+                            ui_callback=self._sync_ui_callback,
+                            confirm_callback=self._sync_confirm)
+        return syncer.sync_notebook(notebook)
 
-    def _get_sync_state(self, remote_exists, remote_has_commits, ahead, behind, total_commits):
-        """Determine sync state based on detected conditions"""
-        if not remote_exists:
-            return "no_remote"
-        elif not remote_has_commits:
-            return "push_only"
-        elif ahead > 0 and behind == 0:
-            return "push_only"
-        elif ahead == 0 and behind > 0:
-            return "pull_only"
-        elif ahead > 0 and behind > 0:
-            return "pull_then_push"
-        elif ahead == 0 and behind == 0:
-            return "already_synced"
-        else:
-            return "unknown"
+    def _sync_ui_callback(self, message, end="\n"):
+        print(message, end=end)
+
+    def _sync_confirm(self, prompt):
+        return input(prompt).strip().lower() == 'y'
 
     def has_internet(self):
         import socket
@@ -3150,11 +2785,11 @@ class NotebookManager:
             if choice == "1":
                 # Delete remote repository
                 self._delete_remote_repository(notebook, account, repo_name, full_name)
-                break
+                return
             elif choice == "2":
                 # Unlink remote only
                 self._unlink_remote(notebook)
-                break
+                return
             elif choice == "3":
                 print("\n  Cancelled.")
                 self.get_input("Press Enter to continue...")
@@ -3338,7 +2973,7 @@ class NotebookManager:
         
         if not git_config or not account:
             print("  ⚠ Not configured with a remote repository.")
-            self.get_input("Press Enter to continue...")
+            self.get_input("\nPress Enter to continue...")
             return
         
         repo_name = git_config['repo']
@@ -3362,17 +2997,22 @@ class NotebookManager:
         
         if confirm != 'y':
             print("\n  Cancelled.")
-            self.get_input("Press Enter to continue...")
+            self.get_input("\nPress Enter to continue...")
             return
         
-        # Remove git remote from local
-        path = notebook['path']
-        if path and os.path.exists(path):
+        # ========== FIX: Safe path access ==========
+        path = notebook.get('path', '')
+        if not path:
+            print("\n  ⚠ No local path found for this notebook. Skipping git remote removal.")
+        elif not os.path.exists(path):
+            print(f"\n  ⚠ Notebook path not found: {path}. Skipping git remote removal.")
+        else:
             result = subprocess.run(["git", "remote", "remove", "origin"], cwd=path, capture_output=True)
             if result.returncode == 0:
                 print("  ✓ Git remote removed from local config")
             else:
                 print("  ⚠ Git remote not found or already removed")
+        # ========== END FIX ==========
         
         # Clear configuration from registry
         for acc_id, acc in self.accounts["accounts"].items():

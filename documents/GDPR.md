@@ -304,7 +304,7 @@ Why:
 - Complete deletion capability
 - Portable data formats
 
-No compliance review needed. The architecture is the compliance.
+Under a local‑only, single‑user deployment, the architecture satisfies key GDPR requirements by construction. Legal review is still recommended for specific use cases (e.g., cloud sync, multi‑user environments).
 
 ### For Personal Use
 
