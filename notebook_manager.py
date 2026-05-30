@@ -959,28 +959,93 @@ class NotebookManager:
             return
         print(" OK")
         self.import_from_url(url)
-
+    
+    #----------#
     def show_accounts_screen(self):
+        """Show accounts with accurate notebook counts from master registry"""
+        from cs_ui import PaginationManager
+        from token_vault import TokenVault
+        
         while True:
             self.clear_screen()
-            accounts_list = list(self.accounts.get("accounts", {}).items())
-            total_accounts = len(accounts_list)
+            
+            # Get accounts from TokenVault
+            vault = TokenVault(self.app_dir)
+            account_ids = vault.list_accounts()
+            
+            accounts = []
+            for acc_id in account_ids:
+                account_data = vault.get_full_account(acc_id)
+                if account_data:
+                    accounts.append({
+                        'id': acc_id,
+                        'username': account_data['username'],
+                        'platform': account_data.get('platform', 'github'),
+                        'host': account_data.get('host', 'github.com'),
+                        'token_enc': acc_id,
+                        'created': account_data.get('created', 0)
+                    })
+            
+            total_accounts = len(accounts)
             width, height = self.get_terminal_size()
             
-            # Standard pagination calculation
-            fixed_lines = 3 + 1 + 2 + 3
-            available = height - fixed_lines
-            items_per_page = int(available * 0.9)
-            items_per_page = max(1, items_per_page)
+            # Load master registry and get fingerprint
+            registry = self.manager.load_registry(force_reload=True)
+            fp_hash = self.manager._compute_fp_hash()
             
-            total_pages = (total_accounts + items_per_page - 1) // items_per_page
+            # ========== COUNT NOTEBOOKS FOR EACH ACCOUNT ==========
+            notebook_counts = {}
+            for acc in accounts:
+                notebook_counts[acc['id']] = 0
+            
+            notebooks_data = registry.get("notebooks", {})
+            
+            for notebook_id, notebook_entry in notebooks_data.items():
+                if isinstance(notebook_entry, str):
+                    continue
+                
+                systems = notebook_entry.get("systems", {})
+                system_entry = systems.get(fp_hash, {})
+                
+                if not system_entry:
+                    continue
+                
+                notebook_path = system_entry.get("path", "")
+                if notebook_path and not os.path.isabs(notebook_path):
+                    notebook_path = os.path.join(self.manager.notebooks_root, notebook_path)
+                
+                if not notebook_path or not os.path.exists(notebook_path):
+                    continue
+                
+                git_config_path = os.path.join(notebook_path, ".git", "config")
+                if not os.path.exists(git_config_path):
+                    continue
+                
+                remote_url = self._extract_remote_url_from_git_config(git_config_path)
+                if not remote_url:
+                    continue
+                
+                parsed = self._parse_git_remote_url(remote_url)
+                if not parsed:
+                    continue
+                
+                for acc in accounts:
+                    if parsed['host'] == acc['host'] and parsed['username'] == acc['username']:
+                        notebook_counts[acc['id']] = notebook_counts.get(acc['id'], 0) + 1
+                        break
+            # ========== END COUNTING ==========
+            
+            # Pagination
+            items_per_page, total_pages = PaginationManager.calculate(
+                total_accounts, height, fixed_lines=8
+            )
             
             if self.accounts_page >= total_pages:
                 self.accounts_page = max(0, total_pages - 1)
             
-            start = self.accounts_page * items_per_page
-            end = min(start + items_per_page, total_accounts)
-            paginated = accounts_list[start:end]
+            start_idx = self.accounts_page * items_per_page
+            end_idx = min(start_idx + items_per_page, total_accounts)
+            paginated = accounts[start_idx:end_idx]
             current_page = self.accounts_page + 1
             
             self.print_header("Accounts")
@@ -989,21 +1054,17 @@ class NotebookManager:
                 print("No accounts configured.")
                 print()
             else:
-                from token_vault import TokenVault
-                vault = TokenVault(self.app_dir)
-                
-                for i, (acc_id, acc) in enumerate(paginated, 1):
-                    # Get notebook count from TokenVault, not from memory
-                    account_data = vault.get_full_account(acc_id)
-                    if account_data:
-                        notebook_count = len(account_data.get("linked_notebooks", []))
-                    else:
-                        notebook_count = 0
-                    
-                    token_preview = acc['token_enc'][:10] + "..." if acc['token_enc'] else "No token"
+                for i, acc in enumerate(paginated, 1):
+                    notebook_count = notebook_counts.get(acc['id'], 0)
                     platform = acc.get('platform', 'github').capitalize()
-                    notebook_text = f"{notebook_count} notebook{'s' if notebook_count != 1 else ''}"
-                    print(f"[{i}] {acc['username']} - {token_preview} ({notebook_text}) [{platform}]")
+                    username = acc['username']
+                    
+                    if notebook_count == 1:
+                        count_text = "1 notebook"
+                    else:
+                        count_text = f"{notebook_count} notebooks"
+                    
+                    print(f"[{i}] {username} - {count_text} [{platform}]")
             
             # Page indicator
             if total_pages > 1:
@@ -1025,39 +1086,41 @@ class NotebookManager:
                 
                 print()
                 print("".join(line_chars))
-                print()
             else:
                 print()
             
             # Footer options
-            options = []
-            
+            footer = []
             if paginated:
-                options.append("[V]iew")
-                options.append("[R]emove")
-            
-            options.append("[A]dd")
+                footer.append("[V]iew")
+                footer.append("[R]emove")
+            footer.append("[A]dd")
             
             if total_pages > 1:
                 if current_page < total_pages:
-                    options.append("[N]ext")
+                    footer.append("[N]ext")
                 if current_page > 1:
-                    options.append("[P]rev")
+                    footer.append("[P]rev")
             
-            options.append("[B]ack")
-            options.append("[Q]uit")
+            footer.append("[B]ack")
+            footer.append("[Q]uit")
             
-            self.print_footer("  ".join(options))
+            self.print_footer("  ".join(footer))
             
-            cmd = self.get_input("> ").lower()
+            cmd = self.get_input("> ").strip().lower()
             
+            # Pagination
             if cmd == "n" and current_page < total_pages:
                 self.accounts_page += 1
                 continue
-            elif cmd == "p" and self.accounts_page > 0:
+            elif cmd == "p" and current_page > 1:
                 self.accounts_page -= 1
                 continue
+            
+            # View account
             elif cmd.startswith("v"):
+                if not paginated:
+                    continue
                 if cmd == "v":
                     try:
                         rel_num = int(self.get_input("Enter account number: "))
@@ -1070,17 +1133,27 @@ class NotebookManager:
                         continue
                 
                 if 1 <= rel_num <= len(paginated):
-                    acc_id, account = paginated[rel_num - 1]
-                    result = self.show_account_repos(account)
-                    if result == "exit_app":
-                        return "exit_app"
+                    acc = paginated[rel_num - 1]
+                    self.show_account_repos(acc)
                 continue
+            
+            # Remove account
+            elif cmd == "r" and paginated:
+                self._remove_account_from_list()
+                self.accounts_page = 0
+                continue
+            
+            # Add account
             elif cmd == "a":
                 self.show_add_account()
-            elif cmd == "r":
-                self.remove_account()
+                self.accounts_page = 0
+                continue
+            
+            # Back
             elif cmd == "b":
                 break
+            
+            # Quit
             elif cmd == "q" or cmd == "qy":
                 if cmd == "qy":
                     self.clear_screen()
@@ -1099,11 +1172,83 @@ class NotebookManager:
                         if confirm == "y":
                             self.clear_screen()
                             return "exit_app"
-                    continue
-        
+            
+            # Invalid command - just loop (no error message, like home screen)
+            else:
+                continue
+
+    def _extract_remote_url_from_git_config(self, config_path):
+        """Extract the remote origin URL from .git/config"""
+        try:
+            with open(config_path, 'r') as f:
+                in_remote = False
+                for line in f:
+                    line = line.strip()
+                    if line == '[remote "origin"]':
+                        in_remote = True
+                    elif in_remote and line.startswith('url ='):
+                        return line.split('=', 1)[1].strip()
+                    elif in_remote and line.startswith('['):
+                        # Reached another section
+                        break
+        except:
+            pass
         return None
 
-
+    def _parse_git_remote_url(self, url):
+        """Parse Git remote URL to extract host and username.
+        Supports:
+        - HTTPS: https://github.com/username/repo.git
+        - HTTPS with credentials: https://username:token@github.com/username/repo.git
+        - SSH: git@github.com:username/repo.git
+        - Git: git://github.com/username/repo.git
+        - Gitea/Self-hosted: https://git.example.com/username/repo.git
+        """
+        # Remove .git suffix
+        if url.endswith('.git'):
+            url = url[:-4]
+        
+        # ========== FIX: Remove credentials (username:password@) from URL ==========
+        # Remove protocol prefix first to make parsing easier
+        protocol = ''
+        if '://' in url:
+            protocol, url = url.split('://', 1)
+        
+        # Remove credentials (anything before @ that contains :)
+        if '@' in url and ':' in url.split('@')[0]:
+            # Strip username:password@ from the URL
+            url = url.split('@', 1)[1]
+        
+        # Re-add protocol if it was there
+        if protocol:
+            url = f"{protocol}://{url}"
+        # ========== END FIX ==========
+        
+        # Handle SSH format: git@github.com:username/repo
+        if '@' in url and ':' in url:
+            # Extract after @ and before :
+            parts = url.split('@', 1)[1].split(':', 1)
+            if len(parts) >= 2:
+                host = parts[0]
+                username_path = parts[1]
+                if '/' in username_path:
+                    username = username_path.split('/')[0]
+                else:
+                    username = username_path
+                return {'host': host, 'username': username}
+        
+        # Handle HTTPS/HTTP format: github.com/username/repo
+        if '://' in url:
+            url = url.split('://', 1)[1]
+        
+        if '/' in url:
+            parts = url.split('/')
+            if len(parts) >= 2:
+                host = parts[0]
+                username = parts[1]
+                return {'host': host, 'username': username}
+        
+        return None
 
     def show_account_repos(self, account):
         token = self._decrypt_token(account['token_enc'])
@@ -2742,22 +2887,20 @@ class NotebookManager:
 
     def delete_repo(self, notebook):
         """Delete remote repository or unlink with multiple options"""
-        self.clear_screen()
-        
-        git_config = notebook.get("git_config")
-        account = notebook.get("account")
-        
-        if not git_config or not account:
-            print("  ⚠ Not configured with a remote repository.")
-            self.get_input("Press Enter to continue...")
-            return
-        
-        repo_name = git_config['repo']
-        full_name = f"{account['username']}/{repo_name}"
-        
         while True:
             self.clear_screen()
             width, _ = self.get_terminal_size()
+            
+            git_config = notebook.get("git_config")
+            account = notebook.get("account")
+            
+            if not git_config or not account:
+                print("  ⚠ Not configured with a remote repository.")
+                self.get_input("Press Enter to continue...")
+                return
+            
+            repo_name = git_config['repo']
+            full_name = f"{account['username']}/{repo_name}"
             
             print("" * width)
             print(f"Delete Options - {notebook['name']}".center(width))
@@ -2783,20 +2926,15 @@ class NotebookManager:
             choice = self.get_input("  Choose [1-3]: ").strip()
             
             if choice == "1":
-                # Delete remote repository
                 self._delete_remote_repository(notebook, account, repo_name, full_name)
-                return
+                return  # Exit immediately after deletion
             elif choice == "2":
-                # Unlink remote only
                 self._unlink_remote(notebook)
-                return
+                return  # Exit immediately after unlinking
             elif choice == "3":
-                print("\n  Cancelled.")
-                self.get_input("Press Enter to continue...")
                 break
-            else:
-                print("\n  Invalid choice. Press Enter to continue...")
-                self.get_input("> ")
+        
+        self.get_input("\nPress Enter to continue...")
     
     def repo_exists(self, account, repo_name, token):
         """Check if repository exists on remote"""
@@ -2904,13 +3042,27 @@ class NotebookManager:
             print(" NOT FOUND")
             print("\n  Repository doesn't exist on remote.")
             print("  Cleaning up local configuration...")
-            self._unlink_remote(notebook)
+            
+            # Still clean up local even if remote doesn't exist
+            path = notebook.get('path', '')
+            if path and os.path.exists(path):
+                subprocess.run(["git", "remote", "remove", "origin"], cwd=path, capture_output=True)
+            
+            # Clear configuration from registry
+            for acc_id, acc in self.accounts["accounts"].items():
+                if notebook['id'] in acc.get("notebooks", {}):
+                    del acc["notebooks"][notebook['id']]
+                    self.save_accounts()
+                    break
+            
+            notebook['git_config'] = None
+            notebook['account'] = None
             self.get_input("Press Enter to continue...")
             return
         print(" FOUND")
         
         print()
-        confirm = self.get_input(f"  Type '{repo_name}' to confirm deletion: ")
+        confirm = self.get_input(f"  Type the repository name '{repo_name}' to confirm deletion: ")
         
         if confirm != repo_name:
             print("\n  Confirmation failed. Delete cancelled.")
@@ -2918,11 +3070,64 @@ class NotebookManager:
             return
         
         print("\n  Deleting repository...", end="", flush=True)
-        if self.delete_github_repo(account, repo_name, token):
-            print(" DELETED")
+        
+        # ========== ACTUALLY DELETE THE REPOSITORY ==========
+        platform = account.get('platform', 'github')
+        success = False
+        
+        if platform == 'github':
+            # GitHub API DELETE request
+            import json
+            cmd = f'''curl -s -X DELETE -H "Authorization: token {token}" \
+                -H "Accept: application/vnd.github.v3+json" \
+                https://api.github.com/repos/{full_name}'''
             
+            result = subprocess.run(cmd, shell=True, capture_output=True, text=True, timeout=30)
+            # GitHub returns 204 No Content on success
+            if result.returncode == 0 and ('204' in result.stderr or 'No Content' in result.stderr or result.stdout == ''):
+                success = True
+                print(" DELETED")
+            else:
+                # Check if repo already doesn't exist (404)
+                if '404' in result.stderr:
+                    print(" NOT FOUND")
+                    success = True  # Already gone
+                else:
+                    print(" FAILED")
+                    print(f"\n  Delete failed: {result.stderr[:200]}")
+                    self.get_input("Press Enter to continue...")
+                    return
+        
+        elif platform == 'gitlab':
+            # GitLab API DELETE request
+            project_id = f"{account['username']}%2F{repo_name}"
+            cmd = f'''curl -s -X DELETE -H "Authorization: Bearer {token}" \
+                "https://gitlab.com/api/v4/projects/{project_id}"'''
+            result = subprocess.run(cmd, shell=True, capture_output=True, text=True, timeout=30)
+            if result.returncode == 0 and ('204' in result.stderr or '202' in result.stderr):
+                success = True
+                print(" DELETED")
+            else:
+                print(" FAILED")
+                self.get_input("Press Enter to continue...")
+                return
+        
+        elif platform == 'bitbucket':
+            # Bitbucket API DELETE request
+            cmd = f'''curl -s -X DELETE -u "{account['username']}:{token}" \
+                https://api.bitbucket.org/2.0/repositories/{full_name}'''
+            result = subprocess.run(cmd, shell=True, capture_output=True, text=True, timeout=30)
+            if result.returncode == 0:
+                success = True
+                print(" DELETED")
+            else:
+                print(" FAILED")
+                self.get_input("Press Enter to continue...")
+                return
+        
+        if success:
             # Remove git remote from local
-            path = notebook['path']
+            path = notebook.get('path', '')
             if path and os.path.exists(path):
                 subprocess.run(["git", "remote", "remove", "origin"], cwd=path, capture_output=True)
                 print("  ✓ Git remote removed from local config")
@@ -2958,8 +3163,7 @@ class NotebookManager:
             
             print("\n  ✓ Remote repository deleted successfully!")
         else:
-            print(" FAILED")
-            print("\n  Could not delete repository. Check your token permissions.")
+            print("\n  ✗ Failed to delete repository. Check your token permissions.")
         
         self.get_input("\nPress Enter to continue...")
 

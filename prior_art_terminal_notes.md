@@ -1,13 +1,19 @@
-# PRIOR ART DISCLOSURE
-## Terminal Notes Integrated System (Comprehensive)
+# Prior Art Disclosure: Terminal Notes Integrated System
 
-**Date of publication:** February 2026 (initial), May 2026 (updated)
-**Repository:** [https://github.com/sys-ronin/terminal-notes](https://github.com/sys-ronin/terminal-notes)
-**Status:** Public, irrevocable, timestamped
+## Complete Technical Disclosure Including Deterministic UUID‑Level Synchronisation
+
+---
+
+**Date of Disclosure:** February 2026 (initial), May 2026 (updated)  
+**Author:** sys_ronin  
+**Status:** Public, Timestamped, Irrevocable  
+**Repository:** github.com/sys-ronin/terminal-notes  
+
+---
 
 This document establishes prior art for the complete integrated system described herein. All concepts, implementations, combinations, and future adaptations disclosed are now part of the public domain.
 
-**No party may patent these concepts. No party may claim exclusive rights.**
+**No party may patent these concepts. No party may claim exclusive rights.**  
 This is not a request. This is a statement of fact.
 
 ---
@@ -39,14 +45,15 @@ This is not a request. This is a statement of fact.
 23. Cross‑Platform Adaptations (Future Implementations)
 24. Cognitive Alignment (Emergent Property)
 25. Zero Background Processes (Cognitive Efficiency)
-26. Integrated System
-27. **Portable Secure Session Vaults (Custom Locations)**
-28. **Trusted Devices Management**
-29. **Missing Vault Detection and Active Cache Validation**
-30. **Docker / Cloud Ephemeral Fingerprinting**
-31. **O(1) Deterministic UUID Chains and Multiple‑Origin Coordination**
-32. **Eternal License**
+26. Portable Secure Session Vaults (Custom Locations)
+27. Trusted Devices Management
+28. Missing Vault Detection and Active Cache Validation
+29. Docker / Cloud Ephemeral Fingerprinting
+30. O(1) Deterministic UUID Chains and Multiple‑Origin Coordination
+31. Deterministic UUID‑Level Synchronisation (Item‑Level Git Sync)
+32. Eternal License
 33. Prior Art Assertion
+34. Integrated System
 
 ---
 
@@ -71,6 +78,7 @@ UUIDs enable:
 - Recovery after crashes
 - O(1) dictionary lookups in memory
 - Deterministic navigation through parent‑child relationships
+- **Per‑UUID commit grouping for synchronisation**
 
 UUID format: timestamp‑based (`YYYYMMDDHHMMSS`) for simple items, RFC 4122 UUID4 for complex.
 All operations use UUID as primary key, never name or path.
@@ -172,6 +180,7 @@ This separation enables:
 - Activity view (aggregated changes across hierarchy)
 - Git efficiency (small deltas, meaningful diffs)
 - Memory efficiency (load structure without content)
+- **Surgical per‑UUID conflict resolution during sync**
 
 ---
 
@@ -273,7 +282,7 @@ Metadata: uuid:ITEM_UUID | parent:PARENT_UUID | root:ROOT_UUID
 Complete item history is queryable with `git log --grep uuid:<UUID> --all`.
 Item‑level searching: find all commits affecting a specific UUID; track item across renames, moves, deletions; reconstruct state at any point; aggregate activity; search deleted/renamed/restored/erased items.
 
-This enables Git to function as a true item‑level temporal database, not just a file‑level version control system.
+This enables Git to function as a true item‑level temporal database, not just a file‑level version control system. **This is the foundation for deterministic UUID‑level synchronisation.**
 
 ---
 
@@ -619,15 +628,7 @@ This aligns with the brain’s default mode network: the brain is most active an
 
 ---
 
-### 26. Integrated System
-
-The above 26 layers function as an integrated whole. Each layer depends on and serves the layers above. All layers serve the user’s experience of disappearance.
-
-This specific combination constitutes a novel, non‑obvious, and fully disclosed system for human‑computer interaction that mirrors human cognitive patterns.
-
----
-
-## 27. Portable Secure Session Vaults (Custom Locations)
+### 26. Portable Secure Session Vaults (Custom Locations)
 
 The secure session vault is no longer fixed to a single location. A `VaultManager` maintains a registry (`vaults_registry.json`) that maps a vault name to an absolute path or URL. Users can:
 
@@ -643,7 +644,7 @@ This feature enables **complete physical separation** of the key store from the 
 
 ---
 
-## 28. Trusted Devices Management
+### 27. Trusted Devices Management
 
 The secure session vault stores per‑machine entries that include:
 
@@ -660,7 +661,7 @@ This provides a **decentralised, offline‑first device revocation mechanism**.
 
 ---
 
-## 29. Missing Vault Detection and Active Cache Validation
+### 28. Missing Vault Detection and Active Cache Validation
 
 The `SessionKeyVault` (a transparent dict‑like cache) validates the existence of the underlying vault file **before every cache hit**:
 
@@ -685,7 +686,7 @@ This ensures that **no operation can use stale keys** and that the system can re
 
 ---
 
-## 30. Docker / Cloud Ephemeral Fingerprinting
+### 29. Docker / Cloud Ephemeral Fingerprinting
 
 Because the hardware fingerprint is derived at runtime from the execution environment, the same code can run inside a Docker container or a cloud VM. The container’s fingerprint is based on its container ID, network stack, hostname, and other ephemeral identifiers.
 
@@ -700,7 +701,7 @@ The three components (app, vault, notebook) can reside on three different cloud 
 
 ---
 
-## 31. O(1) Deterministic UUID Chains and Multiple‑Origin Coordination
+### 30. O(1) Deterministic UUID Chains and Multiple‑Origin Coordination
 
 The system does not use a central database, a transaction manager, or a background orchestrator. Instead, every operation is performed by following **multiple independent UUID resolution chains** that start from different origins:
 
@@ -716,7 +717,46 @@ This architecture is **stateless**: after each operation, all transient state is
 
 ---
 
-## 32. Eternal License
+### 31. Deterministic UUID‑Level Synchronisation (Item‑Level Git Sync)
+
+The system includes a synchronisation mechanism that operates entirely at the UUID level, without relying on Git’s native merge or rebase. The algorithm is deterministic, merge‑free, and requires no user knowledge of Git.
+
+**Core principle:** Each commit changes exactly one UUID. The system groups commits by UUID, forming per‑item chains. For each UUID present on both local and remote, it compares the timestamp of the last commit in each chain and keeps the chain with the newer timestamp. UUIDs present on only one side are kept entirely.
+
+**Commit collection:** For each branch (`HEAD` and `origin/master`), the system runs `git rev-list --no-merges` to get all commit hashes. For each commit, it extracts the UUID from the commit message, the raw encrypted blobs of the three JSON files, and the timestamp, author, and message.
+
+**Grouping by UUID:** All collected commits are grouped by UUID using a dictionary mapping `uuid → list of commits`. Because each commit changes exactly one UUID, the chains are disjoint.
+
+**Conflict resolution:** For each UUID:
+- If only one side has commits, keep that chain.
+- If both sides have commits, compare the last commit timestamp. Keep the chain with the newer last commit; discard the other chain entirely.
+
+**Cognitive alignment:** For a single user across multiple devices, the mental model is “the latest version is the one I want”. The timestamp rule implements this directly. Non‑conflicting edits (different UUIDs) are always preserved.
+
+**Merging and sorting:** All winning commits (from all UUIDs) are collected and sorted by their original timestamp (ascending). This produces a linear sequence independent of branch topology.
+
+**History reconstruction:** A new orphan branch is created. Encryption marker files (`.tn_test`, `.tn_recovery`, `.tn_password`) are restored. If a common ancestor exists, its state is restored. Then, for each commit in sorted order:
+- Write the raw encrypted blobs to the working tree.
+- Stage the files.
+- Commit with the original author, timestamp, and message (using `GIT_AUTHOR_DATE` and `GIT_COMMITTER_DATE`).
+
+**Replace branch and push:** The original branch is reset to the reconstructed branch and force‑pushed to the remote. The result is a linear, merge‑commit‑free history containing all winning commits from both sides, ordered by their original timestamps.
+
+**No common ancestor (filter‑repo case):** When `git merge-base` returns nothing (histories completely unrelated), the system falls back to comparing timestamps and commit counts. The side with the newer timestamp (or more commits if timestamps are equal) wins, and the other side is replaced.
+
+**Free encrypted sync via any Git remote:** Because the synchronisation uses standard Git remotes, encrypted notebook data can be pushed to any Git hosting platform (GitHub, GitLab, Bitbucket, self‑hosted) without exposing content. No separate sync service, subscription, or proprietary cloud is required.
+
+**Observable behaviour:**
+- No merge commits ever appear.
+- History is linear after every sync.
+- Conflicts are resolved automatically; user only sees a confirmation prompt.
+- Encrypted blobs remain encrypted; the sync engine never decrypts them.
+- Marker files (`.tn_*`) are preserved.
+- Subnotebook hierarchies are recursively merged.
+
+---
+
+### 32. Eternal License
 
 The entire system is released under the **Eternal License**, which explicitly:
 
@@ -731,7 +771,7 @@ The license is not a contract; it is a philosophical statement encoded as text. 
 
 ---
 
-## 33. Prior Art Assertion
+### 33. Prior Art Assertion
 
 I, **sys_ronin**, do hereby establish this document and the accompanying source code repository as prior art under **35 U.S.C. § 102(a)(1)** (United States) and **Articles 54 & 56 of the European Patent Convention (EPC)**.
 
@@ -760,14 +800,28 @@ This is not a claim of invention. This is an observation of what already exists.
 
 - **Repository:** [https://github.com/sys-ronin/terminal-notes](https://github.com/sys-ronin/terminal-notes)
 - **First commit:** February 2026
-- **Documents:** `prior_art_terminal_notes.md` (this document), `/documents/*.*`, `LICENSE`, `README.md`
-- **Source code & everything else:** `*.*`
+- **Main prior art** `prior_art_terminal_notes.md`
+- **Documents:** `/documents`, `README.md`, `LICENSE`
+- **Source code:** all Python files in the repository
 
 All content is public and freely accessible. No confidentiality obligations apply. No embargo period was observed.
+
+---
+
+### 34. Integrated System
+
+The above 33 layers function as an integrated whole. Each layer depends on and serves the layers above. All layers serve the user’s experience of disappearance.
+
+This specific combination constitutes a novel, non‑obvious, and fully disclosed system for human‑computer interaction that mirrors human cognitive patterns. The system is not a collection of features; it is a coherent architecture where each component enables the next.
+
+The UUID permanence enables the three‑JSON architecture. The three‑JSON architecture enables Git as an item‑level temporal database. Git enables resurrection, timeline, activity, and the sync algorithm. The sync algorithm enables cross‑device work without conflict. The encryption architecture (hardware‑bound keys, portable vault, recovery phrase) enables zero‑trust portability – notebooks can be stored anywhere, vaults can be moved, and only the user can decrypt. The cognitive UI makes all of this invisible to the user.
+
+The system was not designed from theory. It emerged from constraints: a single user who could not afford to forget, a tiny laptop, no external monitor, no team, no funding. The alignment with cognitive science was discovered afterward. The code came first. The realisation came later.
+
+**The interface disappears. Only the writing remains. That is the entire point.**
 
 ---
 
 **End of Prior Art Disclosure**
 
 *This document is a statement of fact, not a legal opinion. No legal advice is offered. No warranty is provided.*
-```

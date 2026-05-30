@@ -1,5 +1,9 @@
 # The Three‑File Architecture
 
+## The Foundation of the Entire System
+
+---
+
 ## 1. The Division
 
 Every notebook repository contains exactly three JSON files:
@@ -88,7 +92,7 @@ The timeline engine uses this to reconstruct only the requested item, not the wh
 
 ---
 
-## 7. How This Enables Precise Deletion with `git-filter-repo`
+## 7. How This Enables Precise Deletion with `git‑filter‑repo`
 
 When erasing a note, `git-filter-repo` is told to operate only on `structure.json`, `notes.json`, and `files.json`. Because the content is separate from the structure:
 
@@ -154,7 +158,21 @@ If all data were in one file, every edit would change the entire file. Even with
 
 ---
 
-## 12. Why This Design Is the Foundation for Everything
+## 12. How This Enables Deterministic UUID‑Level Synchronisation
+
+The three‑file architecture is the foundation for the sync algorithm. Because each UUID has its own independent chain of commits grouped by UUID, the system can:
+
+- **Collect commits per UUID** without parsing content. The commit message contains the UUID, and the raw blobs of the three files are captured as they are.
+- **Resolve conflicts by timestamp** for each UUID independently. Because notes are stored as key‑value pairs, changes to different UUIDs never interfere with each other.
+- **Replay winning commits** by simply writing the raw encrypted blobs. Each commit is a complete snapshot of the three files. Writing the blobs overwrites only the changed UUID’s entry, leaving other UUIDs untouched.
+- **Preserve non‑conflicting edits** automatically. If one side added a note (UUID‑A) and the other side added a different note (UUID‑B), both chains are kept. The final state contains both notes.
+- **Avoid merge commits entirely** because the sync algorithm rebuilds history on an orphan branch, never creating merge commits.
+
+If structure and content were combined, a single commit would contain changes to multiple UUIDs. Grouping by UUID would be impossible without parsing the entire file. Conflict resolution would require merging file contents, not just comparing timestamps. The sync algorithm would become as complex as Git’s own merge. The three‑file architecture makes UUID‑level sync possible and simple.
+
+---
+
+## 13. Why This Design Is the Foundation for Everything
 
 Without this separation:
 
@@ -166,6 +184,7 @@ Without this separation:
 - Memory would be tied to total note count, not active use.
 - The lock button could not unload structure independently of content.
 - Git storage would grow much faster because each edit would rewrite the entire notebook state.
+- **Synchronisation would be impossible** without complex file‑level merging, and per‑item conflict resolution would not exist.
 
 This separation is not an implementation detail. It is the central architectural decision that enables every other feature:
 
@@ -177,7 +196,8 @@ This separation is not an implementation detail. It is the central architectural
 - **Memory efficiency** – load structure without content, load content on demand.
 - **Lock button** – discard structure, content, and key independently.
 - **Storage efficiency** – small deltas for small changes.
+- **Synchronisation** – per‑UUID commit chains, timestamp‑based conflict resolution, linear history reconstruction.
 
-Every feature you built rests on this single decision: keep the notebook’s blueprint separate from its contents, and link them by UUID. Without it, the system would be a conventional note‑taking app. With it, it becomes a versioned, memory‑efficient, resurrectable, and securely erasable knowledge base.
+Every feature you built rests on this single decision: keep the notebook’s blueprint separate from its contents, and link them by UUID. Without it, the system would be a conventional note‑taking app. With it, it becomes a versioned, memory‑efficient, resurrectable, securely erasable, and synchronisable knowledge base.
 
 This is why the three‑file architecture is the most important part of the codebase. It is not merely a storage format; it is the enabling structure for everything that follows.
