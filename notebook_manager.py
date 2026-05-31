@@ -831,7 +831,11 @@ class NotebookManager:
         self.print_header("Notebook Manager")
 
         if not paginated:
-            print("No notebooks found.")
+            print("No notebooks found, you can create one from home")
+            print()
+            print("or")
+            print()
+            print("Press [A] to add online git account to import")
             print()
         else:
             for idx, nb in enumerate(paginated, 1):
@@ -918,18 +922,26 @@ class NotebookManager:
         else:
             print()
 
-        # Footer options
-        options = ["[V]iew", "[A]ccounts"]
+        # ========== FIX: Remove [V]iew button when no notebooks ==========
+        options = []
+        
+        if paginated:
+            options.append("[V]iew")
+        
+        options.append("[A]ccounts")
+        
         if total_pages > 1:
             if current_page < total_pages:
                 options.append("[N]ext")
             if current_page > 1:
                 options.append("[P]rev")
+        
         if self.is_standalone:
             options.append("[Q]uit")
         else:
             options.append("[B]ack")
             options.append("[Q]uit")
+        # ========== END FIX ==========
 
         self.print_footer("  ".join(options))
 
@@ -1052,6 +1064,8 @@ class NotebookManager:
             
             if not paginated:
                 print("No accounts configured.")
+                print()
+                print("Press [A] to add online git account using token")
                 print()
             else:
                 for i, acc in enumerate(paginated, 1):

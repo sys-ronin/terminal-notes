@@ -2074,6 +2074,9 @@ class TerminalNotes:
             print()
             print("Create your first notebook to get started!")
             print()
+            print("or")
+            print()
+            print("Press [M] to import existing from remote")
         else:
             for i, notebook in enumerate(paginated_items, 1):
                 is_encrypted = notebook.id in self.manager.encrypted_notebooks
