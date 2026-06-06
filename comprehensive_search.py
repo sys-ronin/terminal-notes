@@ -34,18 +34,18 @@ class ComprehensiveSearch:
         Universal search processor.
         """
         self._current_crypto = crypto
-        self._current_context = context  # 🟢 ADD THIS
-        self._is_global_search = False    # 🟢 ADD THIS
-    
+        self._current_context = context
+        self._is_global_search = False
+        
         # Load all unlocked notebooks FIRST
         if hasattr(self.manager, 'load_for_search'):
             self.manager.load_for_search()
-    
+        
         # Step 1: Parse query
         in_home = (context is None or context == 'home')
         parsed = QueryParser.parse(query, in_home=in_home)
-    
-        # 🟢 Set global flag from parsed query
+        
+        # Set global flag from parsed query
         self._is_global_search = parsed['is_global']
         
         # Step 2: Load notebooks for search
@@ -53,7 +53,7 @@ class ComprehensiveSearch:
             self.manager.load_for_search()
         
         # Step 3: Route based on mode
-        results = []  # 🟢 FIX: Initialize as empty list
+        results = []
 
         if mode == 'timeline':
             results = self._get_timeline_items(context, crypto) or []
@@ -70,7 +70,6 @@ class ComprehensiveSearch:
         # Step 5: Deduplicate by UUID
         results = self._deduplicate(results)
         
-        # Step 6: Sort by date
         # Step 6: Sort by date - handle both naive and aware datetimes
         def get_sort_date(item):
             date = item.get('date')
@@ -112,14 +111,14 @@ class ComprehensiveSearch:
                     for notebook in target_notebooks:
                         # Add notebook itself - ONLY if type matches
                         if not notebook.parent_id and (not parsed['type'] or parsed['type'] == 'notebook'):
-                            enhanced = self._enhance_notebook_result({}, notebook, crypto)
+                            enhanced = self._create_notebook_result(notebook, crypto)
                             if enhanced and enhanced.get('uuid') not in seen_uuids:
                                 seen_uuids.add(enhanced['uuid'])
                                 results.append(enhanced)
                         
                         # Add all notes and subnotebooks recursively
                         def add_all_items(nb):
-                            # Add notes - ONLY if type matches (note or file)
+                            # Add notes
                             if not parsed['type'] or parsed['type'] == 'note' or parsed['type'] == 'file':
                                 for note in nb.notes:
                                     # Skip if type doesn't match
@@ -130,39 +129,71 @@ class ComprehensiveSearch:
                                     if note.id in seen_uuids:
                                         continue
                                     
-                                    # For UPDATED/EDITED, only include if modified
+                                    # For UPDATED/EDITED, only include if modified AND within date range
                                     if action in ['UPDATED', 'EDITED']:
                                         if note.updated > note.created:
+                                            include_by_date = True
+                                            if parsed['date_range']:
+                                                start, end = parsed['date_range']
+                                                
+                                                if start.tzinfo is None:
+                                                    start = start.replace(tzinfo=timezone.utc)
+                                                if end.tzinfo is None:
+                                                    end = end.replace(tzinfo=timezone.utc)
+                                                
+                                                if note.updated.tzinfo is None:
+                                                    note_updated_utc = note.updated.replace(tzinfo=timezone.utc)
+                                                else:
+                                                    note_updated_utc = note.updated.astimezone(timezone.utc)
+                                                
+                                                include_by_date = (start <= note_updated_utc <= end)
+                                            
+                                            if include_by_date:
+                                                seen_uuids.add(note.id)
+                                                result = self._create_note_result(note, nb, crypto)
+                                                # Get the last commit message for this note
+                                                root = self.manager._find_root_notebook(nb)
+                                                if root and hasattr(root, 'custom_path') and root.custom_path:
+                                                    import subprocess
+                                                    cmd = ["git", "log", "-1", "--grep", note.id, "--pretty=format:%B", "--all"]
+                                                    git_result = subprocess.run(cmd, cwd=root.custom_path, capture_output=True, text=True)
+                                                    if git_result.returncode == 0 and git_result.stdout:
+                                                        result['commit_message'] = git_result.stdout
+                                                results.append(result)
+                                    
+                                    # For CREATED, only include if created date is within date_range
+                                    elif action == 'CREATED':
+                                        include_by_date = True
+                                        if parsed['date_range']:
+                                            start, end = parsed['date_range']
+                                            
+                                            if start.tzinfo is None:
+                                                start = start.replace(tzinfo=timezone.utc)
+                                            if end.tzinfo is None:
+                                                end = end.replace(tzinfo=timezone.utc)
+                                            
+                                            if note.created.tzinfo is None:
+                                                note_created_utc = note.created.replace(tzinfo=timezone.utc)
+                                            else:
+                                                note_created_utc = note.created.astimezone(timezone.utc)
+                                            
+                                            include_by_date = (start <= note_created_utc <= end)
+                                        
+                                        if include_by_date:
                                             seen_uuids.add(note.id)
                                             result = self._create_note_result(note, nb, crypto)
-                                            # Get the last commit message for this note
+                                            # Get the FIRST commit message for this note (creation)
                                             root = self.manager._find_root_notebook(nb)
                                             if root and hasattr(root, 'custom_path') and root.custom_path:
                                                 import subprocess
-                                                cmd = ["git", "log", "-1", "--grep", note.id, "--pretty=format:%B", "--all"]
+                                                cmd = ["git", "log", "--reverse", "--grep", note.id, "--pretty=format:%B", "--all"]
                                                 git_result = subprocess.run(cmd, cwd=root.custom_path, capture_output=True, text=True)
                                                 if git_result.returncode == 0 and git_result.stdout:
-                                                    result['commit_message'] = git_result.stdout
+                                                    first_commit = git_result.stdout.split('\n')[0]
+                                                    result['commit_message'] = first_commit
                                             results.append(result)
-                                    
-                                    # For CREATED, include all - get FIRST commit (creation)
-                                    elif action == 'CREATED':
-                                        seen_uuids.add(note.id)
-                                        result = self._create_note_result(note, nb, crypto)
-                                        # Get the FIRST commit message for this note (creation)
-                                        root = self.manager._find_root_notebook(nb)
-                                        if root and hasattr(root, 'custom_path') and root.custom_path:
-                                            import subprocess
-                                            # 🟢 FIX: Use --reverse to get the first commit
-                                            cmd = ["git", "log", "--reverse", "--grep", note.id, "--pretty=format:%B", "--all"]
-                                            git_result = subprocess.run(cmd, cwd=root.custom_path, capture_output=True, text=True)
-                                            if git_result.returncode == 0 and git_result.stdout:
-                                                # Take the first commit message (creation)
-                                                first_commit = git_result.stdout.split('\n')[0]
-                                                result['commit_message'] = first_commit
-                                        results.append(result)
                             
-                            # Add subnotebooks - ONLY if type matches 'sub'
+                            # Add subnotebooks
                             if not parsed['type'] or parsed['type'] == 'sub':
                                 for sub in nb.subnotebooks:
                                     if sub.id not in seen_uuids:
@@ -355,16 +386,10 @@ class ComprehensiveSearch:
                                 # Set appropriate flags
                                 if action == 'DELETED':
                                     item['is_deleted'] = True
-                                    item['is_renamed'] = False
-                                    item['is_erased'] = False
                                 elif action == 'RENAMED':
                                     item['is_renamed'] = True
-                                    item['is_deleted'] = False
-                                    item['is_erased'] = False
                                 elif action == 'ERASED':
                                     item['is_erased'] = True
-                                    item['is_deleted'] = False
-                                    item['is_renamed'] = False
                                 elif action == 'RESTORED':
                                     item['is_restored'] = True
                                 results.append(item)
@@ -388,11 +413,23 @@ class ComprehensiveSearch:
         return result
 
     def _create_notebook_result(self, notebook, crypto):
-        """Helper to create notebook result dict"""
+        """Helper to create notebook result dict with REAL last-touched date from Git"""
         from notebook_operations import NotebookOperations
         ops = NotebookOperations(self.manager)
         metadata = ops.get_notebook_metadata(notebook.id) or {}
-    
+        
+        # Get real last-touched date from Git history
+        real_date = None
+        root = self.manager._find_root_notebook(notebook)
+        if root and hasattr(root, 'custom_path') and root.custom_path:
+            real_date = self.history_miner.get_notebook_last_touched(notebook.id, root)
+        
+        # NO FALLBACK - if no Git date, use epoch (1970-01-01)
+        # This ensures notebooks without history NEVER appear in date searches
+        if real_date is None:
+            from datetime import datetime, timezone
+            real_date = datetime(1970, 1, 1, tzinfo=timezone.utc)
+        
         return {
             'type': 'current_notebook',
             'uuid': notebook.id,
@@ -400,14 +437,14 @@ class ComprehensiveSearch:
             'name': notebook.name,
             'is_subnotebook': notebook.parent_id is not None and notebook.parent_id != notebook.id,
             'parent_id': notebook.parent_id,
-            'date': datetime.now(timezone.utc),
+            'date': real_date,
             'notebook_id': notebook.id,
             'note_count': metadata.get('note_count', 0),
             'file_count': metadata.get('file_count', 0),
             'sub_count': metadata.get('sub_count', 0),
             '_crypto': crypto,
-            '_current_context': self._current_context,  # 🟢 ADD THIS
-            '_is_global': self._is_global_search         # 🟢 ADD THIS for g* support
+            '_current_context': self._current_context,
+            '_is_global': self._is_global_search
         }
     
     def _get_timeline_items(self, note_id, crypto):
@@ -643,12 +680,13 @@ class ComprehensiveSearch:
                 d = r.get('date')
                 if not d:
                     continue
-                start, end = parsed['date_range']
-                d = _ensure_utc(d)
-                start = _ensure_utc(start)
-                end = _ensure_utc(end)
                 
-                if not (start <= d <= end):
+                start, end = parsed['date_range']
+                d_utc = _ensure_utc(d)
+                start_utc = _ensure_utc(start)
+                end_utc = _ensure_utc(end)
+                
+                if not (start_utc <= d_utc <= end_utc):
                     continue
             
             filtered.append(r)

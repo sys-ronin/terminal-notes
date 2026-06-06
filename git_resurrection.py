@@ -265,13 +265,55 @@ class GitHistoryMiner:
         try:
             cmd = ["git", "show", "-s", "--format=%ai", commit_hash]
             result = subprocess.run(cmd, cwd=notebook_path, capture_output=True, text=True)
+            
             if result.returncode == 0 and result.stdout.strip():
                 date_str = result.stdout.strip()
+                from datetime import datetime
                 return datetime.strptime(date_str, "%Y-%m-%d %H:%M:%S %z")
-        except:
+        except Exception:
             pass
+        
+        # Fallback to epoch (1970-01-01) for commits that can't be found
         from datetime import datetime, timezone
-        return datetime.now(timezone.utc)
+        return datetime(1970, 1, 1, tzinfo=timezone.utc)
+    
+    def get_notebook_last_touched(self, notebook_id, root_notebook):
+        """Get the last time this notebook was modified (created, renamed, or had content changes)"""
+        if not hasattr(root_notebook, 'custom_path') or not root_notebook.custom_path:
+            return None
+        
+        notebook_path = root_notebook.custom_path
+        
+        # Get crypto if needed
+        crypto = None
+        if root_notebook.id in self.manager.encrypted_notebooks:
+            from notebook_operations import NotebookOperations
+            ops = NotebookOperations(self.manager)
+            crypto = ops.get_crypto(root_notebook.id)
+        
+        # Search for ANY commit mentioning this notebook UUID
+        cmd = [
+            "git", "log", "--all",
+            "--grep", notebook_id,
+            "--pretty=format:%ai|%s",
+            "-1"  # Only get the most recent
+        ]
+        
+        try:
+            result = subprocess.run(cmd, cwd=notebook_path, capture_output=True, text=True)
+            
+            if result.returncode == 0 and result.stdout.strip():
+                line = result.stdout.strip()
+                parts = line.split('|', 1)
+                
+                if len(parts) >= 1:
+                    date_str = parts[0]
+                    from datetime import datetime
+                    return datetime.strptime(date_str, "%Y-%m-%d %H:%M:%S %z")
+        except Exception:
+            pass
+        
+        return None
     
     def _get_commit_message(self, repo_path, commit_hash, crypto=None):
         """Get full commit message, decrypting if necessary"""

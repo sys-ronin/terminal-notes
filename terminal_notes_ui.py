@@ -100,6 +100,7 @@ class TerminalNotes:
         self.activity_view = None
         # In __init__ of TerminalNotes
         self.notebook_manager = NotebookManager(manager=self.manager, ui=self, nav=self.nav, app_dir=self.app_dir)
+        self.jump_histories = {}  # notebook_id -> list of stacks
     
     def load_editor_config(self):
         """Load or create editor config - always use app_dir"""
@@ -339,7 +340,6 @@ class TerminalNotes:
                 lines.append(" ".join(current_line))
 
         return lines
-
     
     def get_input(self, prompt, preserve_case=False):
         """Get input - optionally preserve case"""
@@ -490,12 +490,12 @@ class TerminalNotes:
         # Handle BACK command - SIMPLE ONE-STACK VERSION
         if cmd == "b":
             current = self.nav.current()
-    
+        
             # 🆕 DISABLE BACK ON HOME SCREEN
             if current and current["screen"] == "home":
                 # Silent ignore - user must use [Q]uit
                 return "continue"
-    
+        
             # Regular back for other screens
             if len(self.nav.stack) > 1:
                 self.nav.pop()
@@ -507,18 +507,21 @@ class TerminalNotes:
         if cmd.startswith('l') and current and current["screen"] == "home":
             return self.process_home_command(cmd)
 
-        # Helper function to check jump history
+        # ========== FIX: Notebook-specific jump history helper ==========
         def has_jump_history():
-            return (
-                hasattr(self.nav, "jump_history")
-                and self.nav.jump_history is not None
-                and len(self.nav.jump_history) > 0
-            )
+            if not current or not current.get("id"):
+                return False
+            notebook_id = self._get_root_notebook_id(current["id"])
+            if not notebook_id:
+                return False
+            history = self.jump_histories.get(notebook_id, [])
+            return len(history) > 0
+        # ========== END FIX ==========
 
         # Handle JUMP BACK command (jb)
         if cmd == "jb":
             if has_jump_history():
-                current_position = self.nav.jump_back()
+                current_position = self.jump_back()
                 if current_position:
                     return "navigate"
                 else:
@@ -544,21 +547,26 @@ class TerminalNotes:
         if cmd == "j":
             # Check if we're in root notebook with ONLY jump-back available
             current = self.nav.current()
+            
+            # ========== FIX: Use notebook-specific history check ==========
+            current_notebook_id = None
+            if current and current.get("id"):
+                current_notebook_id = self._get_root_notebook_id(current["id"])
+            
             is_root_with_only_jumpback = (
                 current
                 and current["screen"] == "notebook"
-                and hasattr(self.nav, "jump_history")
-                and self.nav.jump_history
-                and len(self.get_numbered_path_info(current["id"]))
-                <= 1  # Only self, no other targets
+                and current_notebook_id
+                and len(self.get_numbered_path_info(current["id"])) <= 1
+                and len(self.jump_histories.get(current_notebook_id, [])) > 0
             )
 
-            # Proper jump history check
+            # Proper jump history check (notebook-specific)
             has_jump_history = (
-                hasattr(self.nav, "jump_history")
-                and self.nav.jump_history is not None
-                and len(self.nav.jump_history) > 0
+                current_notebook_id
+                and len(self.jump_histories.get(current_notebook_id, [])) > 0
             )
+            # ========== END FIX ==========
 
             if is_root_with_only_jumpback:
                 print("Jump back to previous location:")
@@ -577,7 +585,7 @@ class TerminalNotes:
             # Process the choice
             if choice == "b":
                 if has_jump_history:
-                    if self.nav.jump_back():
+                    if self.jump_back():
                         return "navigate"
                     else:
                         print("No previous jump location to return to")
@@ -638,7 +646,7 @@ class TerminalNotes:
     def process_jump_command(self, jump_number):
         """Process jump by finding existing position OR building correct path"""
         # Save current position BEFORE jumping
-        self.nav.save_jump_position()
+        self.save_jump_position()
 
         current = self.nav.current()
         if not current or current["screen"] not in ["notebook", "subnotebooks"]:
@@ -708,6 +716,70 @@ class TerminalNotes:
             self.nav.push("notebook", target_notebook.id, 0)
 
         return "navigate"
+    
+    def should_show_jump(self):
+        current = self.nav.current()
+        if current and current["id"]:
+            notebook_id = self._get_root_notebook_id(current["id"])
+            if notebook_id:
+                # Check if there's jump history for this notebook
+                history = self.jump_histories.get(notebook_id, [])
+                if history:
+                    return True
+            
+            number_map = self.get_numbered_path_info(notebook_id)
+            if len(number_map) > 1:
+                return True
+
+        return False
+
+    def save_jump_position(self):
+        """Save current position for current notebook"""
+        current = self.nav.current()
+        if not current or not current["id"]:
+            return
+        
+        notebook_id = self._get_root_notebook_id(current["id"])
+        if not notebook_id:
+            return
+        
+        # Initialize history for this notebook if needed
+        if notebook_id not in self.jump_histories:
+            self.jump_histories[notebook_id] = []
+        
+        # Save a copy of current stack
+        self.jump_histories[notebook_id].append(self.nav.stack.copy())
+        
+        # Limit history size
+        if len(self.jump_histories[notebook_id]) > 20:
+            self.jump_histories[notebook_id].pop(0)
+
+    def jump_back(self):
+        """Jump back to previous position in current notebook"""
+        current = self.nav.current()
+        if not current or not current["id"]:
+            return None
+        
+        notebook_id = self._get_root_notebook_id(current["id"])
+        if not notebook_id:
+            return None
+        
+        history = self.jump_histories.get(notebook_id, [])
+        if not history:
+            return None
+        
+        previous_position = history.pop()
+        self.nav.stack = previous_position
+        self.nav.replace_page(0)
+        return self.nav.current()
+
+    def _get_root_notebook_id(self, notebook_id):
+        """Get root notebook ID from any notebook ID"""
+        notebook = self.manager.find_notebook_by_id(notebook_id)
+        if not notebook:
+            return notebook_id
+        root = self.manager._find_root_notebook(notebook)
+        return root.id if root else notebook_id
 
     def process_home_command(self, cmd):
         if cmd == "s" and not self.manager.notebooks:

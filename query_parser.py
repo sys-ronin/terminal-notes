@@ -51,7 +51,7 @@ class QueryParser:
     def parse(cls, query, in_home=True):
         """
         Parse search query into components.
-        Order-free except for in* which must be at the end.
+        Order-free except for in* which must be the last token.
         """
         if not query or not query.strip():
             return {
@@ -62,21 +62,21 @@ class QueryParser:
                 'is_global': False,
                 'text': ''
             }
-    
+
         original = query.strip()
         words = original.split()
-    
+
         # Step 1: Find in* at the END only
         scope = None
         remaining = original
-    
+
         if len(words) >= 2 and words[-2] == 'in*':
             scope = {'notebook': words[-1]}
             remaining = ' '.join(words[:-2])
         elif len(words) >= 1 and words[-1].endswith('in*') and len(words[-1]) > 3:
             scope = {'notebook': words[-1][:-3]}
             remaining = ' '.join(words[:-1])
-    
+
         # Initialize result
         result = {
             'actions': None,
@@ -86,59 +86,58 @@ class QueryParser:
             'text': '',
             'scope': scope
         }
-    
+
         if not remaining:
             return result
-    
+
         # Process remaining words in ANY order
         words = remaining.split()
         text_parts = []
         actions_found = []
         type_found = None
         global_found = False
-    
+
         for word in words:
             matched = False
         
-            # 🟢 FIX: Check actions - must match EXACT pattern with *
+            # Check actions
             if not matched:
                 for pattern, action_list in cls.PATTERNS['actions'].items():
-                    if word == pattern:  # Exact match including *
+                    if word == pattern:
                         actions_found.extend(action_list)
                         matched = True
                         break
-        
-            # 🟢 FIX: Check types - must match EXACT pattern with *
+            
+            # Check types
             if not matched:
                 for pattern, type_val in cls.PATTERNS['types'].items():
-                    if word == pattern:  # Exact match including *
+                    if word == pattern:
                         type_found = type_val
                         matched = True
                         break
-        
-            # 🟢 FIX: Check global - must match EXACT pattern with *
+            
+            # Check global
             if not matched:
-                if word in cls.PATTERNS['global']:  # Exact match including *
+                if word in cls.PATTERNS['global']:
                     global_found = True
                     matched = True
-        
+            
             # If not matched any pattern, it's text
             if not matched:
                 text_parts.append(word)
-    
+
         # Set results (deduplicate actions)
         if actions_found:
             result['actions'] = list(set(actions_found))
         result['type'] = type_found
         result['is_global'] = global_found
         result['text'] = ' '.join(text_parts)
-    
-        # Check for date pattern (can appear anywhere)
-                # Check for date pattern (can appear anywhere)
+
+        # Check for date pattern
         date_match = re.search(cls.PATTERNS['date'], remaining)
         if date_match:
             try:
-                from datetime import datetime as dt  # ← Add this import
+                from datetime import datetime as dt
                 start_date = dt.strptime(date_match.group(1), '%d-%m-%Y')
                 start_date = start_date.replace(hour=0, minute=0, second=0)
             
@@ -156,9 +155,8 @@ class QueryParser:
             except ValueError:
                 pass
         
-        # 🟢 PASTE TIME RANGE PROCESSING HERE
-        # Check for time range keywords (today*, yesterday*, etc.)
-        if result['date_range'] is None:  # Only if no date* already set
+        # Check for time range keywords
+        if result['date_range'] is None:
             for word in words:
                 if word in cls.PATTERNS.get('time_ranges', {}):
                     range_type = cls.PATTERNS['time_ranges'][word]
@@ -183,7 +181,7 @@ class QueryParser:
                     if word in result['text']:
                         result['text'] = result['text'].replace(word, '').strip()
                     break
-    
+
         return result
     
     @classmethod

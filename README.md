@@ -9,7 +9,7 @@
 - **Python 3.13** (any version for installed cffi and cryptography)
 - **Git** (for history, timeline, restoration)
 - **No pip install needed** (cryptography is bundled in `assets/`)
-- **nvim / micro** (for creating and editing notes)
+- **nvim / micro** (configurable via config.json)
 - **Linux / Windows / Mac** (designed to run on any OS)
 
 (tested only on Debian Linux 13)
@@ -28,10 +28,15 @@ python3 terminal_notes_ui.py
 ```
 or
 ```bash
+git clone https://github.com/sys-ronin/terminal-notes.git
+cd terminal-notes
 chmod 700 terminal_notes_ui.py
 ./terminal_notes_ui.py
 ```
-
+**single command**
+```bash
+git clone https://github.com/sys-ronin/terminal-notes.git && cd terminal-notes && python3 terminal_notes_ui.py
+```
 ---
 
 ## 🔍 3. Search (from main app)
@@ -56,7 +61,15 @@ chmod 700 terminal_notes_ui.py
 - `q` → quit
 - `s` → search
 
+*The entire GitHub repository with all its source code and documentation are explicitly part of the prior art (Public + timestamped + enabling)*
+
+*A fact – my app itself has no name printed except on documents, like an app with no name. I could not find a place to put it and it is not needed inside the environment.*
+
 *`The rest is explained in documentations`*
 ---
+`email : sys_ronin@protonmail.com`
+
 
 *Write without friction inside the best possible environment - The Terminal*
+
+`sys-ronin`
