@@ -3553,7 +3553,7 @@ class TerminalNotes:
         return self.manager.create_notebook(name, custom_path=external_path, encrypt=encrypt, phrase=phrase)
         
     def show_create_import_menu(self):
-        """Unified menu for create (default/other) and import"""
+        """Unified menu for create (default/other) and import - Enter to cancel anywhere"""
         if not hasattr(self, 'path_history'):
             self.path_history = []
         
@@ -3578,37 +3578,47 @@ class TerminalNotes:
             print("   → Enter repository URL (must end with .git)")
             print("   → Will prompt for account credentials if needed")
             print()
-            print("5. Back")
             print()
         
-            choice = self.get_input("Choose [1-5]: ")
-        
+            choice = self.get_input("Choose [1-4] or Enter to cancel: ")
+
+            if not choice:
+                return "continue"
+
             if choice == "1":
-                # Default location - existing code
+                # Default location
                 self.clear_screen()
                 self.print_header("Create Notebook - Default Location")
         
-                name = self.get_input("Notebook name: ")
-                if name:
-                    encrypt_choice = self.get_input("Encrypt notebook? [y/N]: ")
-                    encrypt = encrypt_choice.lower() == 'y'
+                name = self.get_input("Notebook name (Enter to cancel): ")
+                if not name:
+                    continue
         
-                    self.clear_screen()
+                encrypt_choice = self.get_input("Encrypt notebook? [y/N] (Enter to cancel): ").strip().lower()
+                if not encrypt_choice:
+                    continue  # Cancel - go back
+                if encrypt_choice not in ['y', 'n']:
+                    print("  Invalid choice. Please enter 'y' or 'n'.")
+                    self.get_input("Press Enter to continue...")
+                    continue
+                encrypt = (encrypt_choice == 'y')
         
-                    try:
-                        notebook = self.manager.create_notebook(name, encrypt=encrypt)
-                        if notebook:
-                            self._just_created = True
-                            print(f"\nPress Enter to continue...", end="")
-                            input()
-                            return "navigate"
-                    except ValueError as e:
-                        print(f"\n✗ Error: {e}")
-                        self.get_input("Press Enter to continue...")
+                self.clear_screen()
+        
+                try:
+                    notebook = self.manager.create_notebook(name, encrypt=encrypt)
+                    if notebook:
+                        self._just_created = True
+                        print(f"\nPress Enter to continue...", end="")
+                        input()
+                        return "navigate"
+                except ValueError as e:
+                    print(f"\n✗ Error: {e}")
+                    self.get_input("Press Enter to continue...")
                 continue
             
             elif choice == "2":
-                # External location (USB/Network drive)
+                # External location
                 self.clear_screen()
                 self.print_header("Create External Notebook")
         
@@ -3623,9 +3633,9 @@ class TerminalNotes:
                     for i, path in enumerate(self.path_history, 1):
                         print(f"  [{i}] {path}")
                     print()
-                    prompt = f"External path [1-{len(self.path_history)} or new path]: "
+                    prompt = f"External path [1-{len(self.path_history)} or new path] (Enter to cancel): "
                 else:
-                    prompt = "External path: "
+                    prompt = "External path (Enter to cancel): "
         
                 path_input = self.get_path_input(prompt)
                 if not path_input:
@@ -3643,7 +3653,6 @@ class TerminalNotes:
                 else:
                     external_path = path_input
         
-                # Verify path exists or can be created
                 external_path = os.path.expanduser(external_path)
                 if not os.path.exists(external_path):
                     print(f"\n  Directory does not exist. Create it? [y/N]: ", end='')
@@ -3654,20 +3663,24 @@ class TerminalNotes:
                         self.get_input("Press Enter to continue...")
                         continue
         
-                name = self.get_input("Notebook name: ")
+                name = self.get_input("Notebook name (Enter to cancel): ")
                 if not name:
                     continue
         
-                encrypt_choice = self.get_input("Encrypt notebook? [y/N]: ")
-                encrypt = encrypt_choice.lower() == 'y'
+                encrypt_choice = self.get_input("Encrypt notebook? [y/N] (Enter to cancel): ").strip().lower()
+                if not encrypt_choice:
+                    continue  # Cancel - go back
+                if encrypt_choice not in ['y', 'n']:
+                    print("  Invalid choice. Please enter 'y' or 'n'.")
+                    self.get_input("Press Enter to continue...")
+                    continue
+                encrypt = (encrypt_choice == 'y')
         
                 self.clear_screen()
         
                 try:
-                    # This calls create_notebook with custom_path
                     notebook = self.manager.create_notebook(name, custom_path=external_path, encrypt=encrypt)
                     if notebook:
-                        # Add to path history
                         if external_path not in self.path_history:
                             self.path_history.insert(0, external_path)
                             self.path_history = self.path_history[:3]
@@ -3681,7 +3694,7 @@ class TerminalNotes:
                 continue
             
             elif choice == "3":
-                # Import existing notebook - existing code
+                # Import existing notebook
                 self.clear_screen()
                 self.print_header("Import Existing Notebook")
         
@@ -3695,9 +3708,9 @@ class TerminalNotes:
                     for i, path in enumerate(self.path_history, 1):
                         print(f"  [{i}] {path}")
                     print()
-                    prompt = f"Notebook path [1-{len(self.path_history)} or new path]: "
+                    prompt = f"Notebook path [1-{len(self.path_history)} or new path] (Enter to cancel): "
                 else:
-                    prompt = "Notebook path: "
+                    prompt = "Notebook path (Enter to cancel): "
         
                 path_input = self.get_path_input(prompt)
                 if not path_input:
@@ -3725,7 +3738,7 @@ class TerminalNotes:
                 continue
             
             elif choice == "4":
-                # Import from Git URL - existing code
+                # Import from Git URL
                 self.clear_screen()
                 self.print_header("Import from Git URL")
         
@@ -3738,7 +3751,7 @@ class TerminalNotes:
                 print("  file:///home/user/backups/notebook.git")
                 print()
         
-                url = self.get_input("URL: ")
+                url = self.get_input("URL (Enter to cancel): ")
                 if not url:
                     continue
         
@@ -3755,11 +3768,8 @@ class TerminalNotes:
                 self.manager.load_all_notebooks(quiet=True)
                 return "navigate"
             
-            elif choice == "5":
-                return "continue"
-            
             else:
-                print("Invalid choice")
+                print("Invalid choice. Please enter 1, 2, 3, or 4.")
                 self.get_input("Press Enter to continue...")
                 continue
 
