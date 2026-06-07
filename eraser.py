@@ -451,6 +451,9 @@ class Eraser:
     
     def standard_delete_notebook(self, notebook_id):
         """Standard Delete - folder removed immediately (UPDATED for master registry)"""
+        from getpass import getpass
+        from crypto import derive_key
+        
         notebook = self.manager.find_notebook_by_id(notebook_id)
         if not notebook:
             return
@@ -480,6 +483,42 @@ class Eraser:
 
         folder_name = os.path.basename(folder_path)
 
+        # ========== PASSWORD VERIFICATION FOR ENCRYPTED NOTEBOOKS ==========
+        if notebook.id in self.manager.encrypted_notebooks:
+            # Get crypto key
+            crypto = None
+            if hasattr(notebook, '_crypto') and notebook._crypto:
+                crypto = notebook._crypto
+            else:
+                crypto = self.manager.session_keys.get(notebook.id)
+            
+            if not crypto:
+                print("  Cannot verify password - notebook not unlocked.")
+                return
+            
+            stored_pw_key = crypto.password_key
+            
+            # Verify password (3 attempts)
+            max_attempts = 3
+            verified = False
+            
+            for attempt in range(max_attempts):
+                remaining = max_attempts - attempt
+                password = getpass(f"  Enter notebook password to confirm deletion ({remaining} attempts): ")
+                
+                derived_key = derive_key(password, folder_name)
+                
+                if derived_key == stored_pw_key:
+                    verified = True
+                    break
+                else:
+                    print("  Wrong password.\n")
+            
+            if not verified:
+                print("\n  Password verification failed. Deletion cancelled.")
+                return
+        # ========== END PASSWORD VERIFICATION ==========
+
         # Clean up session keys
         if notebook.id in self.manager.encrypted_notebooks and folder_name:
             if notebook.id in self.manager.session_keys:
@@ -499,6 +538,7 @@ class Eraser:
             self.manager.secure_storage.remove_session_key(folder_name)
 
         print(f"  ✓ Folder removed: {folder_path}")
+        
     '''
     def secure_erase_notebook(self, notebook):
         """Secure Erase - completely remove notebook and ALL its commits from history"""
@@ -744,17 +784,14 @@ class Eraser:
     def secure_erase_notebook(self, notebook):
         """
         Secure Erase - completely remove notebook and ALL its commits from history.
-        
-        This performs a permanent, irreversible deletion of the entire notebook:
-        1. Collects all UUIDs from the notebook (root + all notes/subnotebooks)
-        2. Uses git-filter-repo to erase every trace of these UUIDs from Git history
-        3. Removes vault entries, session keys, and registry references
-        4. Deletes the notebook folder from disk
+        Requires password verification before proceeding.
         """
         import shutil
         import subprocess
         import tempfile
         import os
+        from getpass import getpass
+        from crypto import derive_key
 
         # Resolve notebook object if ID was passed
         if isinstance(notebook, str):
@@ -801,7 +838,7 @@ class Eraser:
                 self.ui.get_input("Press Enter to continue...")
             return False
 
-        # User confirmation
+        # ========== PASSWORD VERIFICATION CONFIRMATION ==========
         if self.ui:
             self.ui.clear_screen()
             print(f"\n꘎ SECURELY ERASING ENTIRE NOTEBOOK: {notebook.name}")
@@ -809,11 +846,43 @@ class Eraser:
             print()
             print(f"  Repository: {folder_path}")
             print()
-            confirm = self.ui.get_input(f"Type the notebook name '{notebook.name}' to confirm: ")
-            if confirm != notebook.name:
-                print("\n  ꘎ Confirmation failed. Erasure cancelled.")
+
+            # Get crypto key
+            crypto = None
+            if hasattr(notebook, '_crypto') and notebook._crypto:
+                crypto = notebook._crypto
+            else:
+                crypto = self.manager.session_keys.get(notebook.id)
+
+            if not crypto:
+                print("  Cannot verify password - notebook not unlocked.")
                 self.ui.get_input("Press Enter to continue...")
-                return
+                return False
+
+            folder_name = os.path.basename(folder_path)
+            stored_pw_key = crypto.password_key
+
+            # Verify password (3 attempts)
+            max_attempts = 3
+            verified = False
+
+            for attempt in range(max_attempts):
+                remaining = max_attempts - attempt
+                password = getpass(f"  Enter notebook password to confirm erasure ({remaining} attempts): ")
+
+                derived_key = derive_key(password, folder_name)
+
+                if derived_key == stored_pw_key:
+                    verified = True
+                    break
+                else:
+                    print("  Wrong password.\n")
+
+            if not verified:
+                print("\n  ꘎ Password verification failed. Erasure cancelled.")
+                self.ui.get_input("Press Enter to continue...")
+                return False
+        # ========== END PASSWORD VERIFICATION ==========
 
         # Trusted device removal option
         remove_trusted = False
