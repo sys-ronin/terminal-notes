@@ -742,31 +742,46 @@ class Eraser:
 
         '''
     def secure_erase_notebook(self, notebook):
-        """Secure Erase - completely remove notebook and ALL its commits from history"""
+        """
+        Secure Erase - completely remove notebook and ALL its commits from history.
+        
+        This performs a permanent, irreversible deletion of the entire notebook:
+        1. Collects all UUIDs from the notebook (root + all notes/subnotebooks)
+        2. Uses git-filter-repo to erase every trace of these UUIDs from Git history
+        3. Removes vault entries, session keys, and registry references
+        4. Deletes the notebook folder from disk
+        """
         import shutil
         import subprocess
         import tempfile
         import os
 
+        # Resolve notebook object if ID was passed
         if isinstance(notebook, str):
             notebook = self.manager.find_notebook_by_id(notebook)
             if not notebook:
                 if self.ui:
-                    print(f"  ꘎ Notebook with ID {notebook} not found")
+                    print(f"  Notebook with ID {notebook} not found")
                     self.ui.get_input("Press Enter to continue...")
                 return False
 
-        if self.ui:
-            self.ui.clear_screen()
-            print(f"\n꘎ SECURELY ERASING ENTIRE NOTEBOOK: {notebook.name}")
-            print("  This will DELETE ALL COMMITS and remove the folder permanently!")
-            print()
+        # Force unlock if notebook is locked (critical after password change)
+        if notebook.locked or not notebook.custom_path:
+            crypto = self.manager.get_crypto(notebook.id)
+            if crypto:
+                fresh = self.manager.find_notebook_by_id(notebook.id)
+                if fresh and fresh.custom_path:
+                    notebook = fresh
+                else:
+                    return False
+            else:
+                return False
 
-        # ========== Get folder path from MASTER REGISTRY ==========
+        # Get folder path from master registry
         master_registry = self.manager.load_registry(force_reload=True)
         notebook_data = master_registry.get("notebooks", {}).get(notebook.id, {})
-        folder_path = None
         system_entries = notebook_data.get("systems", {})
+        folder_path = None
 
         for system_entry in system_entries.values():
             path = system_entry.get("path")
@@ -777,16 +792,21 @@ class Eraser:
                     folder_path = path
                     break
 
-        if not folder_path:
-            # Fallback to notebook.custom_path
-            if hasattr(notebook, 'custom_path') and notebook.custom_path:
-                folder_path = notebook.custom_path
-            else:
-                if self.ui:
-                    print(f"  ⚠ Cannot find folder for notebook {notebook.name}")
-                return False
+        if not folder_path and hasattr(notebook, 'custom_path') and notebook.custom_path:
+            folder_path = notebook.custom_path
 
+        if not folder_path:
+            if self.ui:
+                print(f"  Cannot find folder for notebook {notebook.name}")
+                self.ui.get_input("Press Enter to continue...")
+            return False
+
+        # User confirmation
         if self.ui:
+            self.ui.clear_screen()
+            print(f"\n꘎ SECURELY ERASING ENTIRE NOTEBOOK: {notebook.name}")
+            print("  This will DELETE ALL COMMITS and remove the folder permanently!")
+            print()
             print(f"  Repository: {folder_path}")
             print()
             confirm = self.ui.get_input(f"Type the notebook name '{notebook.name}' to confirm: ")
@@ -795,7 +815,7 @@ class Eraser:
                 self.ui.get_input("Press Enter to continue...")
                 return
 
-        # ========== OPTIONAL: Trusted device removal prompt ==========
+        # Trusted device removal option
         remove_trusted = False
         if self.ui and len(system_entries) > 1:
             print("\n  This notebook has trusted devices on other systems.")
@@ -804,15 +824,9 @@ class Eraser:
             print("    2) Remove ALL trusted devices (complete wipe)")
             print()
             choice = self.ui.get_input("  Choose [1/2]: ").strip()
-            if choice == "2":
-                remove_trusted = True
-                print("  Will remove all trusted device entries from vaults.")
-            else:
-                print("  Removing only this machine's trust.")
-            print()
+            remove_trusted = (choice == "2")
 
-        crypto = notebook._crypto if hasattr(notebook, '_crypto') else None
-
+        # Collect ALL UUIDs from notebook structure
         all_uuids = set()
         all_uuids.add(notebook.id)
 
@@ -825,19 +839,22 @@ class Eraser:
 
         collect_uuids_from_notebook(notebook)
 
+        # Create replace file for filter-repo
         temp_replace_file = None
-        original_dir = os.getcwd()
-
         try:
             with tempfile.NamedTemporaryFile(mode='w', suffix='.txt', delete=False) as f:
                 for uuid in all_uuids:
                     f.write(f"literal:{uuid}==>\n")
                 temp_replace_file = f.name
-
+        except Exception as e:
             if self.ui:
-                print("\n  Step 2: Running notebook erasure...")
-                print("  " + "="*50)
+                print(f"  Failed to create replace file: {e}")
+                self.ui.get_input("Press Enter to continue...")
+            return False
 
+        # Run git-filter-repo to erase all UUIDs
+        original_dir = os.getcwd()
+        try:
             os.chdir(folder_path)
 
             import git_filter_repo
@@ -851,82 +868,63 @@ class Eraser:
                 "--path", "files.json"
             ]
 
-            args = git_filter_repo.FilteringOptions.parse_args(
-                [
-                    "--force",
-                    "--replace-text", temp_replace_file,
-                    "--prune-empty=always",
-                    "--notebook-erase", notebook_erase_arg,
-                ] + path_args,
-                error_on_empty=False
-            )
+            filter_args = [
+                "--force",
+                "--replace-text", temp_replace_file,
+                "--prune-empty=always",
+                "--notebook-erase", notebook_erase_arg,
+            ] + path_args
 
+            args = git_filter_repo.FilteringOptions.parse_args(filter_args, error_on_empty=False)
             filter = git_filter_repo.NotebookEraseFilter(args, notebook.id, all_uuids)
             filter.run()
 
             os.chdir(original_dir)
 
-            if self.ui:
-                print("  " + "="*50)
-                print(f"    ✓ Notebook erasure completed")
-
-            # ========== REMOVE VAULT ENTRIES (if user chose to remove all) ==========
-            if remove_trusted:
-                if self.ui:
-                    print("\n  Removing vault entries for all trusted devices...")
-                for fp_hash, system_entry in system_entries.items():
-                    vault_name = system_entry.get("vault", "default")
-                    entry_uuid = system_entry.get("entry")
-                    vault_path = self.manager.vault_manager.get_vault_path(vault_name)
-                    if vault_path and entry_uuid:
-                        self.manager.vault_manager.remove_entry_from_vault(vault_path, entry_uuid)
-                        if self.ui:
-                            print(f"    Removed entry for system {fp_hash[:8]}...")
-            else:
-                # Remove only current system's entry
-                fp_hash = self.manager._compute_fp_hash()
-                current_entry = system_entries.get(fp_hash)
-                if current_entry:
-                    vault_name = current_entry.get("vault", "default")
-                    entry_uuid = current_entry.get("entry")
-                    vault_path = self.manager.vault_manager.get_vault_path(vault_name)
-                    if vault_path and entry_uuid:
-                        self.manager.vault_manager.remove_entry_from_vault(vault_path, entry_uuid)
-                        if self.ui:
-                            print("  Removed current system's vault entry.")
-
-            # Clean up session keys
-            folder_name = os.path.basename(folder_path)
-
-            if notebook.id in self.manager.encrypted_notebooks:
-                if notebook.id in self.manager.session_keys:
-                    del self.manager.session_keys[notebook.id]
-                if self.manager.secure_storage:
-                    self.manager.secure_storage.remove_session_key(folder_name)
-
-            # Unregister from master registry (removes the notebook entry entirely)
-            self.manager.unregister_notebook(notebook.id)
-
-            # Delete the folder
-            if os.path.exists(folder_path):
-                shutil.rmtree(folder_path)
-
-            if self.ui:
-                print("\n  ✓ NOTEBOOK COMPLETELY ERASED FROM HISTORY!")
-                self.ui.get_input("\nPress Enter to continue...")
-
-            return True
-
         except Exception as e:
             if self.ui:
-                print(f"      ✗ Erasure failed: {e}")
-            import traceback
-            traceback.print_exc()
+                print(f"  Erasure failed: {e}")
+                self.ui.get_input("Press Enter to continue...")
+            os.chdir(original_dir)
             return False
         finally:
             if temp_replace_file and os.path.exists(temp_replace_file):
                 os.unlink(temp_replace_file)
-            try:
-                os.chdir(original_dir)
-            except:
-                pass
+
+        # Remove vault entries
+        if remove_trusted:
+            for system_entry in system_entries.values():
+                vault_name = system_entry.get("vault", "default")
+                entry_uuid = system_entry.get("entry")
+                vault_path = self.manager.vault_manager.get_vault_path(vault_name)
+                if vault_path and entry_uuid:
+                    self.manager.vault_manager.remove_entry_from_vault(vault_path, entry_uuid)
+        else:
+            fp_hash = self.manager._compute_fp_hash()
+            current_entry = system_entries.get(fp_hash)
+            if current_entry:
+                vault_name = current_entry.get("vault", "default")
+                entry_uuid = current_entry.get("entry")
+                vault_path = self.manager.vault_manager.get_vault_path(vault_name)
+                if vault_path and entry_uuid:
+                    self.manager.vault_manager.remove_entry_from_vault(vault_path, entry_uuid)
+
+        # Clean up session keys and registry
+        folder_name = os.path.basename(folder_path)
+        if notebook.id in self.manager.encrypted_notebooks:
+            if notebook.id in self.manager.session_keys:
+                del self.manager.session_keys[notebook.id]
+            if self.manager.secure_storage:
+                self.manager.secure_storage.remove_session_key(folder_name)
+
+        self.manager.unregister_notebook(notebook.id)
+
+        # Delete the folder
+        if os.path.exists(folder_path):
+            shutil.rmtree(folder_path)
+
+        if self.ui:
+            print("\n  ✓ NOTEBOOK COMPLETELY ERASED FROM HISTORY!")
+            self.ui.get_input("\nPress Enter to continue...")
+
+        return True

@@ -1,409 +1,222 @@
-# Prior Art Disclosure: Deterministic Item‑Level Git Synchronisation
+# Prior Art Disclosure: Distributed Synchronization for Encrypted, Item‑Level Git Repositories
 
-## A Technical Description of UUID‑Based, Encrypted, Merge‑Free History Reconstruction
+## A Technical Description of Per‑UUID Conflict Resolution Using Timestamps Without Decryption
 
 ---
 
-**Date of Disclosure:** May 2026  
-**Author:** sys_ronin  
+**Date of Disclosure:** June 2026  
+**Author:** sys-ronin  
 **Status:** Public, Timestamped, Irrevocable  
 **Repository:** github.com/sys-ronin/terminal-notes  
 
 ---
 
-## Table of Contents
+## Summary
 
-1. Introduction  
-2. Core Components and Properties  
-   2.1 UUID as Permanent Item Identifier  
-   2.2 Three‑JSON Architecture  
-   2.3 Encryption Before Git: Memory‑Level, Stream Cipher  
-   2.4 Commit Granularity  
-   2.5 Git Delta Compression on Encrypted Blobs  
-   2.6 Portable Vault with Hardware Binding  
-   2.7 Cognitive Interface Design  
-   2.8 Free, Lifetime End‑to‑End Encrypted Sync Using Any Git Remote  
-3. Synchronisation Algorithm (Observable Behaviour)  
-   3.1 Gathering Commits  
-   3.2 Grouping by UUID  
-   3.3 Conflict Resolution (Deterministic Timestamp Rule)  
-   3.4 Merging Winning Chains  
-   3.5 History Reconstruction on Orphan Branch  
-   3.6 Replacing the Original Branch  
-   3.7 Handling No Common Ancestor (Filter‑Repo Case)  
-4. Complete Flowchart of All Sync Possibilities  
-5. Why the Algorithm Is Possible  
-   5.1 Item‑Isolating Data Model  
-   5.2 Stream Cipher Encryption  
-   5.3 UUID in Commit Messages  
-   5.4 Complete Snapshot Strategy  
-   5.5 Deterministic Timestamp Rule (Cognitive Alignment)  
-   5.6 No Decryption During Sync  
-6. Observable Behaviour (No Claim)  
-7. Prior Art Assertion  
-8. Conclusion  
+This document describes a synchronization method for distributed Git repositories where data is encrypted at rest and conflicts are resolved at the **item level** (per note, per file, per subnotebook) without ever decrypting the content. Each logical item is identified by a permanent UUID embedded in commit messages. Commits affecting the same UUID are grouped into a chain. When two repositories diverge, the system compares the timestamps of the last commit in each chain and keeps the chain whose last commit is newer. The result is a linear history with no merge commits, no manual conflict resolution, and no decryption during the conflict detection phase.
+
+The method also handles **security commits** (password changes) separately: all security commits from both sides are preserved, deduplicated by content hash, and applied during reconstruction. This ensures that password changes propagate correctly without breaking the ability to decrypt the data.
+
+The system is built on standard Git primitives (commit messages, timestamps, raw blob retrieval) and works with any remote Git server (GitHub, GitLab, Bitbucket, self‑hosted). No central coordination server is required.
 
 ---
 
-## 1. Introduction
+## 1. Core Principles
 
-This document describes a synchronisation system for Git‑backed, encrypted, hierarchical data. The system operates entirely at the item level, where each item (note, file, subnotebook) is identified by a permanent UUID. Data is stored in three JSON files (`structure.json`, `notes.json`, `files.json`), each encrypted with a stream cipher (AES‑256‑GCM in counter mode) **before** being written to disk or passed to Git.
+### 1.1 UUID as Permanent Item Identifier
 
-The synchronisation process does **not** rely on Git’s built‑in merge or rebase. It collects all commits from local and remote branches, groups them by UUID, and for each UUID keeps the chain whose last commit is newer (deterministic timestamp comparison). Winning commits are merged, sorted by timestamp, and replayed on an orphan branch to produce a linear history. The result is a single, straight timeline with no merge commits. The user never needs to know Git.
+Every logical item – note, file, subnotebook – receives a UUID at creation. This UUID is embedded in every commit message that affects the item, using a structured format (e.g., `uuid:...`). The UUID never changes, even when the item is renamed, moved, or edited.
 
-Because the synchronisation operates on standard Git remotes, the encrypted notebook data can be pushed to any Git hosting platform – GitHub, GitLab, Bitbucket, or a self‑hosted Gitea instance – without exposing content. No separate sync service, subscription, or proprietary cloud is required. **This provides free, lifetime end‑to‑end encrypted synchronisation using only a free GitHub (or any Git) account.**
+### 1.2 Commit as Immutable Snapshot
 
-The purpose of this disclosure is to establish prior art for the concepts described herein. No claim of novelty is made; the description is based on observable behaviour of a working implementation.
+Each commit records the complete state of the encrypted JSON files (`notes.json`, `files.json`, `structure.json`) at that moment. The commit message also contains the UUID of the affected item and the action type (`CREATED`, `UPDATED`, `DELETED`, `RENAMED`, `RESTORED`, `ERASED`).
 
----
+### 1.3 Timestamp as Conflict Resolution Authority
 
-## 2. Core Components and Their Properties
+Each commit carries a Unix timestamp (seconds since the epoch). When two histories diverge, the timestamp of the last commit in a UUID chain determines which chain is kept. The system does not need to examine the encrypted content; it only compares timestamps.
 
-### 2.1 UUID as Permanent Item Identifier
+### 1.4 No Decryption During Conflict Detection
 
-Every note, file, and subnotebook receives a UUID at creation. The UUID never changes. It is stored in:
-
-- `structure.json` as part of the item’s metadata.
-- `notes.json` or `files.json` as the dictionary key for content.
-- Every Git commit message that affects the item (via the `uuid:` metadata field).
-
-Thus, the UUID serves as a **stable foreign key** that can be used to group commits across different branches, independent of the item’s name or location.
-
-### 2.2 Three‑JSON Architecture
-
-The system maintains three separate JSON files per notebook:
-
-- `structure.json` – hierarchy, parent‑child relationships, item metadata (title, timestamps, file extensions).  
-- `notes.json` – a dictionary mapping note UUIDs to their plaintext content.  
-- `files.json` – a dictionary mapping file UUIDs to their binary content.
-
-Because each item occupies a single key‑value pair, editing one item changes only a small, contiguous region of the corresponding JSON file. This property is essential for both storage efficiency and surgical conflict resolution.
-
-### 2.3 Encryption Before Git: Memory‑Level, Stream Cipher
-
-All JSON files are encrypted **before** they are written to the working directory or staged for commit. The encryption uses AES‑256‑GCM in counter mode (CTR). For a fixed (key, nonce) pair:
-
-- The ciphertext is generated by XOR‑ing the plaintext with a keystream derived from the key and nonce.
-- The encryption is deterministic: the same plaintext at the same position produces the same ciphertext.
-- A small change in plaintext (e.g., modifying one key‑value pair) affects **only the corresponding ciphertext bytes**; the rest of the encrypted file remains identical.
-
-**Key distinction from conventional encrypted Git:**  
-Conventional tools (e.g., `git-crypt`, `transcrypt`) encrypt files **on disk** using Git’s `clean`/`smudge` filters. The data is written to the working directory in plaintext, then encrypted by the filter before being stored in the object database. This means:
-
-- The plaintext is exposed on disk (briefly, but still exposed).
-- The encryption is applied to the entire file as a monolithic blob.
-- A one‑byte change in the plaintext produces a completely different ciphertext (with block ciphers in CBC mode), breaking Git’s delta compression.
-
-In this system, encryption happens **in memory**, **before** any data touches the disk. The application holds the plaintext in RAM, encrypts it, and writes only the ciphertext to the working directory. Git never sees plaintext. The working directory never contains plaintext. This eliminates the exposure window entirely.
-
-**Choice of stream cipher is critical:**  
-A stream cipher (AES‑GCM in CTR mode) ensures that a small plaintext change produces a small, localised ciphertext change. If a block cipher (e.g., AES‑CBC) were used, a one‑byte plaintext change would change an entire 16‑byte block, and due to CBC chaining, all subsequent blocks would also change. The resulting ciphertext would be completely different, and Git’s delta compression would fail.
-
-Thus, the combination of **memory‑level encryption** and **stream cipher** is what enables efficient Git storage of encrypted data.
-
-### 2.4 Commit Granularity
-
-Every user operation (create, edit, delete, rename) results in a Git commit that changes **exactly one UUID** (or a small, constant number). The commit message contains the UUID and the action type (`CREATED`, `UPDATED`, `DELETED`, `RENAMED`, `RESTORED`, `ERASED`). This makes each commit **item‑addressable** and independent of other items.
-
-The commit message also contains the `parent` UUID (the notebook containing the item) and the `root` UUID (the root notebook of the hierarchy), enabling full hierarchical resurrection.
-
-### 2.5 Git Delta Compression on Encrypted Blobs
-
-Git stores objects (blobs) in packfiles using the `xdelta` algorithm, which identifies regions of similarity between two binary blobs and stores only the differences.
-
-Because the encrypted blob of `notes.json` changes only in a small localised region after a single‑note edit (Section 2.3), Git’s delta compression sees two highly similar binary blobs. It therefore stores a compact delta (a few hundred bytes) instead of a full copy of the entire encrypted file. This holds true even though the blob is encrypted and appears as high‑entropy noise – the difference between the two blobs is localised and small.
-
-**Why this works despite encryption:**  
-The `xdelta` algorithm does not need to understand the content. It operates on binary sequences. When two binary sequences are 99.9% identical, `xdelta` finds the differences regardless of whether the sequences represent plaintext, ciphertext, or random noise. The stream cipher preserves the locality of changes, and `xdelta` detects that locality.
-
-Consequently, the repository size grows proportionally to the number of changes, not to the size of the encrypted files multiplied by the number of commits. This property is critical for the long‑term viability of the system.
-
-### 2.6 Portable Vault with Hardware Binding
-
-Encryption keys are not stored in the application’s configuration or on the filesystem in plaintext. Instead:
-
-- A vault file (binary) contains encrypted entries, each associated with a notebook and a system.
-- Each entry is encrypted with a **system fingerprint** derived at runtime from hardware identifiers (machine ID, hostname, processor, etc.). The fingerprint is never stored.
-- The vault file is portable. It can be stored on a USB drive, network share, or cloud bucket, independent of the notebook folder.
-- Missing vault detection occurs before any operation uses stale keys. If the vault file is inaccessible, the system locks the notebook immediately.
-
-When a notebook is unlocked on a new machine, the user provides the recovery phrase. The system derives the keys, creates a new vault entry encrypted with the new machine’s fingerprint, and stores it in the vault. Subsequent unlocks on that machine require only the password.
-
-This creates a **decentralised, offline‑first trust model** with no central authority.
-
-### 2.7 Cognitive Interface Design
-
-The system’s interface is designed to minimise cognitive load:
-
-- All commands are visible in the footer (recognition, not recall).
-- Items are numbered; pressing the number selects the item (affordance).
-- The path is displayed as numbered segments; `j3` jumps to the third segment (spatial memory).
-- `jb` returns to the previous location (working memory offload).
-- The lock button (`[L]ock`) explicitly flushes keys and structure from memory (user‑controlled memory management).
-- Soft delete (`forget`) removes from view but keeps history; hard delete (`erase`) requires typing `erase` to confirm.
-
-The interface is not a layer on top of the data. The data is the interface.
-
-### 2.8 Free, Lifetime End‑to‑End Encrypted Sync Using Any Git Remote
-
-This is a vital property of the system that emerges from the combination of the components described above.
-
-**How it works:**
-
-1. The notebook folder (containing only encrypted `.json` files and Git metadata) is pushed to any standard Git remote – GitHub, GitLab, Bitbucket, or a self‑hosted instance.
-2. The Git remote stores only encrypted blobs. It never receives plaintext. The hosting provider cannot read the content.
-3. Synchronisation between devices uses the same Git remote as a **passive, untrusted relay**. The remote does not need to be trusted because the data is end‑to‑end encrypted.
-4. The sync algorithm (Section 3) operates entirely on the encrypted blobs, never decrypting them. Conflict resolution uses only commit metadata (UUIDs, timestamps), not content.
-5. The user does not need to pay for a sync service. A free GitHub account (which offers unlimited public and private repositories) is sufficient. The same mechanism works with any Git hosting provider, including self‑hosted instances.
-
-**Why this is possible:**
-
-- The three‑JSON architecture + stream cipher + per‑UUID commits make Git’s delta compression work on encrypted data, so the repository does not bloat (Section 2.5).
-- The deterministic timestamp rule (Section 3.3) resolves conflicts without decryption, so the remote never needs to see plaintext.
-- The orphan branch replay (Section 3.5) reconstructs linear history using only encrypted blobs, so the sync algorithm never requires the encryption key.
-
-**Implications for the user:**
-
-- **Free for life:** No subscription fees. No per‑seat pricing. No vendor lock‑in. The user pays only for what they already have (a free GitHub account).
-- **End‑to‑end encrypted:** The hosting provider cannot read the content. The encryption keys never leave the user’s devices (except the recovery phrase, which the user stores offline).
-- **No separate sync service required:** The system uses standard Git remotes, which are already supported by every major hosting provider and can be self‑hosted.
-- **Works with any Git remote:** GitHub, GitLab, Bitbucket, Gitea, Codeberg, or a private server. The user is not forced to use a specific provider.
-- **Lifetime compatibility:** Because the system uses only standard Git operations and plaintext commit messages (containing UUIDs but no content), the data remains accessible as long as Git exists. No proprietary sync protocol is used.
+The synchronization algorithm operates entirely on commit metadata (hashes, timestamps, UUIDs, raw encrypted blobs). It never decrypts `notes.json`, `files.json`, or `structure.json` to decide which version wins. Decryption is deferred until after the linear history is reconstructed.
 
 ---
 
-## 3. Synchronisation Algorithm (Observable Behaviour)
+## 2. Data Structures
 
-### 3.1 Gathering Commits
+### 2.1 Commit Metadata Extracted
 
-For a given branch (e.g., `HEAD` and `origin/master`), the system runs:
+For each commit, the system extracts:
 
-```bash
-git rev-list --no-merges <ref>
-```
+| Field | Source | Purpose |
+|-------|--------|---------|
+| **Commit hash** | `git rev-list` | Unique identifier |
+| **UUID** | Commit message (regex) | Groups commits by item |
+| **Timestamp** | `%ct` format | Conflict resolution |
+| **Author name/email** | `%an`, `%ae` | Preserve attribution |
+| **Message** | `%B` | Full commit message |
+| **Raw blobs** | `git show <hash>:<file>` | `notes_raw`, `files_raw`, `struct_raw` |
 
-For each commit hash, it extracts:
+### 2.2 UUID Extraction Patterns
 
-- The raw binary blob of `notes.json`, `files.json`, and `structure.json` (via `git show <hash>:<file>`).
-- The UUID from the commit message (using regex patterns).
-- The timestamp, author, and full commit message.
+The system searches for UUIDs using three patterns, in order:
 
-Merge commits are ignored because the system never creates them.
+1. `uuid:<UUID>` (explicit metadata)
+2. Standard RFC 4122 UUID (`xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx`)
+3. Timestamp‑based ID (`\d{14}`) (legacy)
 
-### 3.2 Grouping by UUID
+### 2.3 Security Commits Detection
 
-All collected commits are grouped by the extracted UUID. Each UUID now has a **chain** of commits in chronological order (the commits that touched that specific item). Because each commit changes exactly one UUID (Section 2.4), the chains are disjoint – a commit belongs to exactly one UUID’s chain.
-
-### 3.3 Conflict Resolution (Deterministic Timestamp Rule)
-
-For each UUID, the system compares the local chain and the remote chain:
-
-- If only one side has commits, that chain is kept.
-- If both sides have commits, the **last commit timestamp** of each chain is compared. The chain whose last commit has a newer timestamp is kept; the other chain is discarded entirely.
-
-No content analysis is performed. The decision is based solely on commit timestamps. This is a deterministic, automatic rule that requires no user intervention.
-
-**Why the timestamp rule is cognitively aligned:**  
-For a single user working across multiple devices, the mental model is: *“I wrote this note on my laptop, then edited it later on my desktop. The latest version is the one I want.”*
-
-The timestamp rule maps directly to this intuition. It does not require the user to understand “branches”, “merges”, or “conflict resolution”. It simply respects recency.
-
-### 3.4 Merging Winning Chains
-
-All winning commits (from all UUIDs) are collected into a single list and sorted by their original timestamp (ascending). This produces a **linear sequence of commits** that respects the original order in which changes were made, independent of branch topology. Commits from local and remote are interleaved according to their timestamps.
-
-### 3.5 History Reconstruction on Orphan Branch
-
-A new orphan branch is created (`git checkout --orphan`). The system restores encryption marker files (`.tn_test`, `.tn_recovery`, `.tn_password`) from backup. If a common ancestor exists, the initial state is set to that commit’s blobs. Otherwise, the initial state is empty.
-
-Then, for each commit in the sorted winning list, the system:
-
-- Writes the raw binary blobs (`notes.json`, `files.json`, `structure.json`) to the working tree (overwriting the previous versions).
-- Stages the changes and commits with the original author, timestamp, and commit message (using `GIT_AUTHOR_DATE`, `GIT_COMMITTER_DATE` environment variables).
-
-Because each commit is a **complete snapshot** of the three encrypted files, this replay simply copies bytes; no parsing, decryption, or content merging is needed.
-
-### 3.6 Replacing the Original Branch
-
-After reconstruction, the orphan branch is renamed to the original branch name (e.g., `master`), replacing the old history. The branch is then force‑pushed to the remote (`git push --force`). The result is a **linear, merge‑commit‑free history** that contains all winning commits from both sides, ordered by their original timestamps.
-
-### 3.7 Handling No Common Ancestor (Filter‑Repo Case)
-
-If `git merge-base` returns no common ancestor (e.g., after a `git-filter-repo` operation that rewrote history), the system compares:
-
-- The last commit timestamps of local and remote.
-- If timestamps are equal, the total commit counts.
-
-The side with the newer timestamp (or, if equal, the side with more commits) wins. The losing side is either reset to the winning side (`git reset --hard`) or force‑pushed to the winning side (`git push --force`). This is a fallback for the rare case where histories have diverged completely.
+A commit is classified as a **security commit** if its message contains `type: SECURITY:` or starts with `SECURITY:`. Security commits are handled separately from normal item commits.
 
 ---
 
-## 4. Complete Flowchart of All Sync Possibilities
+## 3. Conflict Resolution Algorithm
 
-```mermaid
-flowchart TD
-    Start([Sync triggered]) --> CheckConfig{Configured?}
-    CheckConfig -->|No| EndConfig["Abort: Not configured"]
-    CheckConfig -->|Yes| Internet{Internet?}
-    Internet -->|No| EndInternet["Abort: No connection"]
-    Internet -->|Yes| TokenValid{Token valid?}
-    TokenValid -->|No| EndToken["Abort: Invalid token"]
-    TokenValid -->|Yes| GitInit[Git init if missing]
-    GitInit --> RemoteSetup[Set up remote origin]
-    RemoteSetup --> RepoExists{Remote repo exists?}
-    RepoExists -->|No| CreatePush[Create repo → push all commits → done]
-    RepoExists -->|Yes| Fetch["git fetch origin"]
-    Fetch --> CollectCommits[Get commits from HEAD and origin/master<br>with UUIDs, timestamps, raw blobs]
-    CollectCommits --> CompareSets{Local vs Remote hashes}
-    CompareSets -->|Identical| AlreadySync["Already in sync → done"]
-    CompareSets -->|Only local ahead| SimplePush[Simple push → git push]
-    CompareSets -->|Only remote behind| SimplePull[Simple pull → git pull --rebase]
-    CompareSets -->|Both have unique commits| GetMergeBase["git merge-base HEAD origin/master"]
-    
-    GetMergeBase --> CommonExists{Common ancestor exists?}
-    
-    CommonExists -->|Yes| StoreCommonHash[Store common ancestor hash]
-    StoreCommonHash --> GetLocalRemoteChains[Build per-UUID chains from local and remote commits]
-    GetLocalRemoteChains --> ResolveConflicts[For each UUID:<br>• Only on one side → keep entire chain<br>• On both sides → keep chain with newer last commit timestamp]
-    ResolveConflicts --> MergeWinning[Collect all winning commits, sort by timestamp]
-    MergeWinning --> BackupMarkers[Backup .tn_test, .tn_recovery, .tn_password]
-    BackupMarkers --> OrphanBranch["git checkout --orphan temp-linear-reconstruction"]
-    OrphanBranch --> RestoreMarkers[Restore marker files on orphan branch]
-    RestoreMarkers --> RestoreCommon[Restore files from common ancestor commit:<br>• notes.json, files.json, structure.json<br>• Add, commit with original metadata]
-    RestoreCommon --> ReplayCommits[For each winning commit in timestamp order,<br>skipping the common ancestor itself:]
-    ReplayCommits --> ApplyChange[Apply change to current_notes, current_files, current_struct<br>using decrypted notes_raw from commit]
-    ApplyChange --> WriteEncrypted[Write encrypted notes.json, files.json, structure.json]
-    WriteEncrypted --> StageCommit[Stage files → commit with original author/date/message]
-    StageCommit --> MoreCommits{More winning commits?}
-    MoreCommits -->|Yes| ReplayCommits
-    MoreCommits -->|No| VerifyMarkers[Verify .tn_test, .tn_recovery, .tn_password<br>restore if missing]
-    VerifyMarkers --> ReplaceBranch["git checkout original_branch<br>git reset --hard temp-linear-reconstruction<br>git branch -D temp"]
-    ReplaceBranch --> ForcePushReconstructed["git push --force origin branch"]
-    ForcePushReconstructed --> UpdateLastPush[Update last_push timestamp]
-    UpdateLastPush --> DoneReconstructed[Done – linear history reconstructed]
-    
-    CommonExists -->|No| CompareTimestampCommit[Compare local vs remote:<br>• Last commit timestamp<br>• If equal, compare commit count]
-    CompareTimestampCommit --> Decision{Which wins?}
-    Decision -->|Remote newer| ResetHard["git reset --hard origin/master → done"]
-    Decision -->|Local newer| ForcePush["git push --force → done"]
-    Decision -->|Remote has more commits| ResetHard
-    Decision -->|Local has more commits| ForcePush
-    
-    SimplePush --> UpdateLastPush
-    SimplePull --> UpdateLastPush
-    ForcePush --> UpdateLastPush
-    ResetHard --> UpdateLastPush
-    CreatePush --> Done
-    AlreadySync --> Done
-    EndConfig --> Done
-    EndInternet --> Done
-    EndToken --> Done
-    UpdateLastPush --> Done
-    Done([Sync finished])
-```
+### 3.1 Collect Commits from Both Sides
 
-This flowchart covers all observable sync cases: already in sync, local‑only commits, remote‑only commits, diverged histories with a common ancestor (leading to UUID chain resolution and linear reconstruction), and diverged histories without a common ancestor (fallback to timestamp comparison and simple pull/push).
+The system runs `git rev-list --no-merges <ref>` on both the local branch (`HEAD`) and the remote branch (`origin/master`). For each commit, it extracts the UUID, timestamp, raw blobs, and metadata.
+
+### 3.2 Separate Normal and Security Commits
+
+Security commits are separated from normal commits immediately after collection. They will be handled by a different logic path.
+
+### 3.3 Group Normal Commits by UUID
+
+Normal commits are grouped into dictionaries (`local_chains`, `remote_chains`) where the key is the UUID and the value is a list of commits affecting that UUID, sorted by timestamp.
+
+### 3.4 Resolve Conflicts Per UUID
+
+For each UUID that appears in either chain:
+
+- If only one side has commits for that UUID, keep that side’s entire chain.
+- If both sides have commits, compare the timestamps of the **last commit** in each chain (the most recent). Keep the chain whose last commit is newer. Discard the older chain entirely.
+
+**This is the entire conflict resolution logic.** No JSON parsing. No decryption. No manual intervention.
+
+### 3.5 Collect All Security Commits
+
+All security commits from both sides are collected into a single list. Duplicates are removed by comparing the SHA‑256 hash of the raw `.tn_recovery` blob content. The newest security commit (by timestamp) is identified for later use.
+
+### 3.6 Combine and Sort
+
+The winning normal commits (from step 3.4) and the unique security commits (from step 3.5) are combined into a single list and sorted by timestamp (ascending). This list represents the linear history to be reconstructed.
 
 ---
 
-## 5. Why the Algorithm Is Possible
+## 4. Linear History Reconstruction
 
-### 5.1 Item‑Isolating Data Model
+The reconstruction process creates a new, linear branch from scratch, replaying the winning commits in order.
 
-The three‑JSON architecture ensures that each item’s data is physically separate from others. Editing one note changes only one key‑value pair in `notes.json` and (optionally) one object in `structure.json`. This isolation is the precondition for per‑UUID grouping and independent conflict resolution.
+### 4.1 Create Orphan Branch
 
-### 5.2 Stream Cipher Encryption
+The system creates an orphan branch (`temp-linear-reconstruction`) with no parent. This branch will hold the reconstructed history.
 
-Because AES‑256‑GCM in CTR mode produces a ciphertext change proportional to the plaintext change, the encrypted blob after a single‑note edit differs from its predecessor only in a small localised region. This directly enables Git’s delta compression to work efficiently (Section 2.5).
+### 4.2 Apply Common Ancestor (if any)
 
-### 5.3 UUID in Commit Messages
+If a common ancestor exists (found via `git merge-base`), the system retrieves the encrypted blobs from that ancestor and writes them to the working directory. This serves as the starting point.
 
-Embedding the UUID in the commit message allows the system to **group commits by item** without parsing or decrypting the file content. The commit message is the only plaintext metadata in the repository.
+### 4.3 Replay Winning Commits in Order
 
-### 5.4 Complete Snapshot Strategy
+For each commit in the sorted winning list:
 
-Each commit contains a full copy of the three encrypted JSON files. This means reconstruction can be performed by simple binary copy. No merge of file contents is required. The algorithm only needs to decide **which** snapshot to use for each UUID chain, not **how** to combine conflicting changes within a file.
+- Retrieve the raw encrypted blobs (`notes_raw`, `files_raw`, `struct_raw`) for that commit.
+- Decrypt them (using the current crypto state) and merge into the working state.
+- Write the updated encrypted blobs back to disk.
+- Stage the changed files (`notes.json`, `files.json`, `structure.json`).
+- If the commit is a security commit, also write the `.tn_*` files from that commit and stage them.
+- Create a new commit with the original author, timestamp, and commit message.
 
-### 5.5 Deterministic Timestamp Rule (Cognitive Alignment)
+**Important:** Decryption occurs only during replay, not during conflict resolution.
 
-The timestamp rule is not an arbitrary choice. It is derived from the cognitive model of a single user working across multiple devices:
+### 4.4 Restore Non‑Security TN Files
 
-- The user expects the **most recent edit** to be the final state.
-- Non‑conflicting edits (different UUIDs) are always preserved.
-- Conflicting edits to the same UUID are resolved by recency, not by user intervention.
+If no security commits were applied during reconstruction, the system restores the `.tn_*` files from backup copies made before the reconstruction began.
 
-This aligns with how humans think about time and recency. The system never presents a merge conflict or asks “which version do you want?” – it simply does what the user would expect. The rule is deterministic, automatic, and requires zero Git knowledge.
+### 4.5 Replace Original Branch
 
-### 5.6 No Decryption During Sync
-
-Because the sync algorithm operates on commit metadata (UUIDs, timestamps, raw blobs) and never needs to inspect the plaintext content, **decryption never occurs during synchronisation**. This is a critical property:
-
-- The encrypted data never leaves its encrypted state.
-- The sync engine does not need access to the encryption key.
-- The key is required only for unlocking the notebook locally.
-
-This means that synchronisation can be performed on untrusted networks or through untrusted intermediaries without exposing plaintext. It also means that the Git remote (GitHub, GitLab, etc.) never receives the encryption key and never sees plaintext.
+The system switches back to the original branch, resets it to the reconstructed history, and deletes the temporary branch. A force push sends the linear history to the remote.
 
 ---
 
-## 6. Observable Behaviour (No Claim)
+## 5. Security Commit Handling (Password Changes)
 
-- **No merge commits** ever appear in the repository history.
-- **History is linear** after every sync (a single straight line of commits ordered by timestamp).
-- **Conflicts are resolved automatically** using the timestamp rule; the user only sees a confirmation prompt describing what will happen.
-- **Encrypted blobs remain encrypted** throughout the process; the sync engine never decrypts them.
-- **Marker files (`.tn_*`)** are preserved across history rewrites.
-- **Subnotebook hierarchies** are recursively merged because the reconstruction replays the entire structure snapshot.
-- **Free, lifetime end‑to‑end encrypted sync with any Git remote** – the system pushes encrypted binary blobs to any standard Git server (GitHub, GitLab, Bitbucket, self‑hosted). No separate sync service, no subscription fees, and no vendor lock‑in. The hosting provider never sees plaintext content.
+Password changes are represented by changes to the `.tn_recovery`, `.tn_test`, and `.tn_password` files. These files are not item‑specific and cannot be merged using the per‑UUID rule. The system handles them as follows:
 
----
+1. **Separate early** – Security commits are separated from normal commits before any conflict resolution.
+2. **Keep all** – All unique security commits from both sides are preserved (not just the newest chain).
+3. **Deduplicate by content** – The system compares the raw `.tn_recovery` blob content using SHA‑256 to avoid keeping identical password changes from both sides.
+4. **Apply during reconstruction** – When a security commit is encountered during replay, the system overwrites the `.tn_*` files in the working directory with the versions from that commit.
+5. **Notify user** – After reconstruction, if the newest security commit came from the remote side, the system locks the notebook and informs the user that the password has changed. The user must use the new password to unlock.
 
-## 7. Prior Art Assertion
-
-This document establishes prior art for the following concepts, all of which are implemented and observable in the accompanying source code as of May 2026:
-
-1. **Memory‑level encryption before Git** – encrypting data in RAM before it is written to disk or passed to Git, eliminating plaintext exposure on disk.
-2. **Stream cipher + structured JSON for localised ciphertext changes** – using AES‑GCM on dictionary‑structured data so that a single‑item edit changes only a small region of the encrypted blob.
-3. **Per‑UUID commit grouping** – collecting commits based on UUID extracted from commit messages.
-4. **Deterministic conflict resolution by timestamp** – keeping the chain whose last commit is newer, discarding the other, aligned with the cognitive model of a single user.
-5. **Linear history reconstruction without merge commits** – replaying winning commits on an orphan branch and replacing the original branch.
-6. **Encrypted binary blob handling** – working with raw encrypted blobs, never decrypting during sync.
-7. **Item‑level commit granularity** – each commit changes exactly one UUID (or a small constant number).
-8. **Three‑JSON architecture as enabler** – isolating items into separate key‑value pairs to enable surgical binary changes.
-9. **Complete snapshot replay** – reconstructing history by copying whole encrypted blobs, not by merging content.
-10. **Zero‑Git‑knowledge user interface** – sync triggered by a single confirmation, all Git details hidden.
-11. **Handling of no common ancestor** – fallback to timestamp and commit count comparison when merge‑base is absent.
-12. **Free, lifetime end‑to‑end encrypted sync via any Git remote** – using standard Git remotes (GitHub, GitLab, Bitbucket, self‑hosted) as encrypted storage backends, with no separate sync service required. The user pays nothing beyond what they already pay for their Git hosting (which can be free).
-13. **Portable, hardware‑bound vault** – a portable binary file containing entries encrypted with a runtime‑derived system fingerprint, never stored.
-14. **Missing vault detection with active cache invalidation** – validating vault existence before every cache hit, locking immediately if missing.
-15. **Cognitive interface design** – numbered items, visible commands, spatial navigation, working memory offload, explicit memory flush.
-
-These concepts are described in public, timestamped documents and source code as of May 2026. They constitute prior art under:
-
-- **35 U.S.C. § 102(a)(1)** (United States)
-- **EPC Article 54(2)** (European Patent Convention)
-- **EPO Enlarged Board of Appeal Decision G 1/23 (2 July 2025)** – public availability alone is sufficient for prior art; no requirement of reproducibility applies.
-
-No party may obtain valid patent claims covering any concept disclosed herein in any jurisdiction.
-
-The system is released under the **Eternal License**, which explicitly prohibits patenting any disclosed concept and asserts that the technology belongs to no one.
+This design ensures that a password change on one machine propagates to others, and that the system never ends up in a state where the notebook cannot be decrypted.
 
 ---
 
-## 8. Conclusion
+## 6. Handling Diverged Histories Without a Common Ancestor
 
-This document describes a synchronisation system that operates at the item level (UUID), uses encrypted binary blobs, resolves conflicts automatically by comparing timestamps (cognitively aligned with single‑user expectations), and reconstructs a perfectly linear history without merge commits. The system is implemented and used daily. The description is based on observable code behaviour, not on theoretical speculation.
+When the local and remote repositories have no common ancestor (e.g., when a notebook is cloned from a backup or created from scratch), the system presents a simple decision interface to the user. It compares the timestamps and commit counts of both branches and offers one of three actions:
 
-The enabling factors are: the three‑JSON architecture, stream cipher encryption, UUIDs in commit messages, Git’s binary delta compression, memory‑level encryption, and the deterministic timestamp rule. Together, they allow a deterministic, user‑transparent sync engine that requires no knowledge of Git.
+- **Update local** – if the remote is newer (or has more commits), reset local to remote.
+- **Push local** – if local is newer (or has more commits), force push local to remote.
+- **Reconstruct** – if both sides have unique commits, perform the per‑UUID reconstruction described above.
 
-**Crucially, this system provides free, lifetime end‑to‑end encrypted synchronisation using any standard Git remote.** No separate sync service is required. A free GitHub account is sufficient. The data remains encrypted at all times. The hosting provider never sees plaintext. The user never pays a subscription. This is a direct consequence of the architectural choices described above.
-
-This disclosure is made in the public interest. It may be cited in any patent examination, litigation, or prior art search.
+This decision is presented in clear, non‑technical language.
 
 ---
 
-**sys_ronin**  
-May 2026  
+## 7. Implementation Notes
+
+### 7.1 No JSON Parsing During Conflict Resolution
+
+The synchronization algorithm never calls `json.loads()` on the encrypted blobs. It treats the blobs as opaque binary data. Parsing and decryption are deferred until after the winning commits are selected.
+
+### 7.2 Atomic Operations
+
+All writes to the working directory are performed directly. The reconstruction branch is built in isolation and only replaces the original branch after successful completion.
+
+### 7.3 Git Commands Used
+
+- `git rev-list --no-merges` – enumerate commits
+- `git log -1 --format=%an|%ae|%ct|%B` – extract metadata
+- `git show <hash>:<file>` – retrieve raw blobs
+- `git merge-base` – find common ancestor
+- `git checkout --orphan` – create new branch without history
+- `git commit` with environment variables (preserve original author and timestamp)
+- `git push --force` – update remote after reconstruction
+
+### 7.4 Platform Support
+
+The system is platform‑independent, using only standard Git commands and Python’s standard library. It works on Linux, macOS, and Windows, with any remote Git server (GitHub, GitLab, Bitbucket, Gitea, or self‑hosted).
+
+---
+
+## 8. Prior Art Assertion
+
+This document establishes prior art for the following concepts, all of which are disclosed in public, timestamped materials as of June 2026:
+
+1. **Per‑UUID conflict resolution** using commit timestamps, without decrypting content.
+2. **Separation of normal and security commits** during synchronization.
+3. **Deduplication of security commits** by content hash (`.tn_recovery`).
+4. **Linear history reconstruction** on an orphan branch, preserving original timestamps and author information.
+5. **Synchronization of encrypted Git repositories** without a central coordination server.
+6. **Handling of diverged histories without a common ancestor** through a simple user‑facing decision interface.
+
+The concepts disclosed herein are now part of the public domain. No party may obtain valid patent claims covering any concept described in this document.
+
+---
+
+## 9. Conclusion
+
+This document describes a synchronization method for distributed, encrypted Git repositories where conflicts are resolved at the item level using only commit timestamps. The system never decrypts the content during conflict detection, works with any Git remote, and requires no central server.
+
+The method handles both normal item updates and security‑critical password changes. It produces a linear history with no merge commits and no manual conflict resolution.
+
+The description is factual. The code is open. The behavior is observable. This disclosure is made in the public interest.
+
+---
+
+**sys-ronin**  
+June 2026  
 sys_ronin@protonmail.com  
 github.com/sys-ronin/terminal-notes
 ```

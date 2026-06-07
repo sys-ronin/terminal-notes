@@ -2890,7 +2890,7 @@ class NotebookManager:
                     print(f"  ✓ Notebook linked to account: {account['username']}@{account.get('platform', 'github')}")
             
             print(f"\nNext steps:")
-            print(f"1. Use [P]ush to create the repository on GitHub and push your notebook")
+            print(f"1. Use [S]ync to create the repository on GitHub and push your notebook")
             print(f"2. The repository will be created as {'🔒 PRIVATE' if visibility == 'private' else '🔓 PUBLIC'}")
             print(f"3. You can change visibility anytime with the [V]isibility button")
             

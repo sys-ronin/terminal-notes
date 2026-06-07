@@ -5080,8 +5080,6 @@ class NotebookEraseFilter(RepoFilter):
         # Check if this commit belongs to the notebook by looking for root UUID
         root_pattern = b'root:' + self.notebook_uuid
         if root_pattern in full_message:
-            # 🔇 Verbose output - comment out for silent operation
-            # print(f"        🔥 REMOVING notebook commit: {commit.original_id[:8] if commit.original_id else 'unknown'}")
             commit.skip()
             self.commits_removed += 1
             return
@@ -5090,14 +5088,42 @@ class NotebookEraseFilter(RepoFilter):
         for uuid in self.all_uuids:
             uuid_pattern = b'uuid:' + uuid
             if uuid_pattern in full_message:
-                # 🔇 Verbose output - comment out for silent operation
-                # print(f"        🔥 REMOVING UUID commit: {commit.original_id[:8] if commit.original_id else 'unknown'}")
                 commit.skip()
                 self.commits_removed += 1
                 return
         
+        # ========== FIX: Filter out parents that are not in the graph ==========
+        orig_parents = aux_info.get('orig_parents', [])
+        valid_parents = []
+        
+        for p in orig_parents:
+            # Check if this parent exists in the graph
+            if hasattr(self, '_orig_graph') and hasattr(self._orig_graph, 'value'):
+                if p in self._orig_graph.value:
+                    valid_parents.append(p)
+                else:
+                    # Parent was filtered out - this is expected during erasure
+                    pass
+            else:
+                # Fallback: keep parent if we can't check
+                valid_parents.append(p)
+        
+        # Update the commit's parents to only valid ones
+        if len(valid_parents) != len(orig_parents):
+            commit.parents = valid_parents
+            aux_info['orig_parents'] = valid_parents
+            
+            # If no valid parents remain, this commit becomes a root commit
+            # That's fine - it will still be processed
+        # ========== END FIX ==========
+        
         # Call parent for normal processing
-        super()._tweak_commit(commit, aux_info)
+        try:
+            super()._tweak_commit(commit, aux_info)
+        except AssertionError as e:
+            # If assertion still fails, skip this commit
+            commit.skip()
+            self.commits_removed += 1
 
 def main():
     setup_gettext()
