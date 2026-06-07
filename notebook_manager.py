@@ -2700,12 +2700,11 @@ class NotebookManager:
     def configure_notebook(self, notebook):
         self.clear_screen()
         self.print_header(f"Configure {notebook['name']}")
-        # ========== SURGICAL FIX: Use folder name, not notebook ID ==========
+        
+        # Get folder name
         folder_name = os.path.basename(notebook['path']) if notebook['path'] else ""
         
-        # If no path, try to get folder name from notebooks_root
         if not folder_name:
-            # Try to find folder by notebook_id
             notebooks_root = getattr(self.manager, 'notebooks_root', None)
             if notebooks_root and os.path.exists(notebooks_root):
                 for folder in os.listdir(notebooks_root):
@@ -2713,26 +2712,84 @@ class NotebookManager:
                         folder_name = folder
                         break
         
-        # Use folder_name as suggested repo (NOT the notebook ID)
+        # Repository name is FIXED - derived from folder name
         suggested_repo = folder_name if folder_name else f"{notebook['name']}-{notebook['id']}"
-        # ========== END FIX ==========
-        folder_name = os.path.basename(notebook['path']) if notebook['path'] else ""
-        suggested_repo = folder_name if folder_name else notebook['id'][:8]
+        
         accounts = list(self.accounts.get("accounts", {}).items())
+        
         if not accounts:
             print("No accounts found. Please add an account first.")
             self.get_input("Press Enter to continue...")
             self.show_accounts_screen()
             return
+        
+        # ========== FIX: Count notebooks by scanning actual Git remotes ==========
+        from token_vault import TokenVault
+        vault = TokenVault(self.app_dir)
+        
+        # Get current system fingerprint for path resolution
+        fp_hash = self.manager._compute_fp_hash()
+        registry = self.manager.load_registry(force_reload=True)
+        notebooks_data = registry.get("notebooks", {})
+        
+        # Build map of account_id -> actual notebook count on THIS machine
+        actual_counts = {}
+        for acc_id, acc in accounts:
+            actual_counts[acc_id] = 0
+        
+        for notebook_id, notebook_entry in notebooks_data.items():
+            if isinstance(notebook_entry, str):
+                continue
+            
+            systems = notebook_entry.get("systems", {})
+            system_entry = systems.get(fp_hash, {})
+            
+            if not system_entry:
+                continue
+            
+            notebook_path = system_entry.get("path", "")
+            if notebook_path and not os.path.isabs(notebook_path):
+                notebook_path = os.path.join(self.manager.notebooks_root, notebook_path)
+            
+            if not notebook_path or not os.path.exists(notebook_path):
+                continue
+            
+            git_config_path = os.path.join(notebook_path, ".git", "config")
+            if not os.path.exists(git_config_path):
+                continue
+            
+            remote_url = self._extract_remote_url_from_git_config(git_config_path)
+            if not remote_url:
+                continue
+            
+            parsed = self._parse_git_remote_url(remote_url)
+            if not parsed:
+                continue
+            
+            # Find matching account
+            for acc_id, acc in accounts:
+                if parsed['host'] == acc['host'] and parsed['username'] == acc['username']:
+                    actual_counts[acc_id] += 1
+                    break
+        # ========== END FIX ==========
+        
         print("Select account:")
         for i, (acc_id, acc) in enumerate(accounts, 1):
-            notebook_count = len(acc.get("notebooks", {}))
-            print(f"[{i}] {acc['username']}@{acc.get('platform', 'github')} - {notebook_count} notebooks")
+            notebook_count = actual_counts.get(acc_id, 0)
+            if notebook_count == 1:
+                count_text = "1 notebook"
+            else:
+                count_text = f"{notebook_count} notebooks"
+            print(f"[{i}] {acc['username']}@{acc.get('platform', 'github')} - {count_text}")
         print(f"[{len(accounts)+1}] Add new account")
         print()
+        
         choice = self.get_input("Enter number: ")
         if not choice:
+            print("\nConfiguration cancelled.")
+            self.get_input("Press Enter to continue...")
             return
+        
         try:
             idx = int(choice) - 1
             if 0 <= idx < len(accounts):
@@ -2745,29 +2802,36 @@ class NotebookManager:
             else:
                 return
         except:
+            print("\nInvalid selection. Configuration cancelled.")
+            self.get_input("Press Enter to continue...")
             return
+        
+        # Repository name is FIXED - no user input
         print()
         print(f"Repository name: {suggested_repo}")
         repo_name = suggested_repo
         print("  (Repository name is fixed and cannot be changed)")
+        
         print("\nRepository visibility:")
         print("[1] 🔒 Private - Only you can see and push")
         print("[2] 🔓 Public  - Everyone can see")
         print()
+        
         vis_choice = self.get_input("Choose [1/2]: ")
         if not vis_choice:
             print("\nConfiguration cancelled.")
             self.get_input("Press Enter to continue...")
             return
-
+        
         while vis_choice not in ['1', '2']:
             vis_choice = self.get_input("Please enter 1 or 2 (or press Enter to cancel): ")
             if not vis_choice:
                 print("\nConfiguration cancelled.")
                 self.get_input("Press Enter to continue...")
                 return
-
+        
         visibility = "private" if vis_choice == "1" else "public"
+        
         print("\n" + "=" * 50)
         print("Configuration Summary:")
         print(f"Account: {account['username']}@{account.get('platform', 'github')}")
@@ -2775,22 +2839,24 @@ class NotebookManager:
         print(f"Visibility: {'🔒 PRIVATE' if visibility == 'private' else '🔓 PUBLIC'}")
         print("=" * 50)
         print()
+        
         confirm = self.get_input("Save this configuration? [y/N]: ").lower()
         if confirm != 'y':
             print("\nConfiguration cancelled.")
             self.get_input("Press Enter to continue...")
             return
+        
         exists, existing_nb = self.repo_exists_in_accounts(acc_id, repo_name)
         if exists and existing_nb != notebook['id']:
             print(f"\nRepository '{repo_name}' is already used by another notebook!")
             print(f"Each repository can only be linked to one notebook.")
-            print(f"Please choose a different name or use a different account.")
             self.get_input("Press Enter to continue...")
             return
+        
         if self.update_notebook_config(notebook['id'], acc_id, repo_name, visibility):
             print(f"\n✓ Configuration saved successfully!")
             
-            # ========== SURGICAL FIX: Update TokenVault with linked notebook ==========
+            # Update TokenVault with linked notebook
             from token_vault import TokenVault
             vault = TokenVault(self.app_dir)
             account_data = vault.get_full_account(acc_id)
@@ -2810,7 +2876,6 @@ class NotebookManager:
                     )
                     print(f"  ✓ Notebook linked to account: {account['username']}@{account.get('platform', 'github')}")
             else:
-                # Account exists in accounts dict but not in vault? Add it
                 token = self._decrypt_token(account.get('token_enc', ''))
                 if token:
                     vault.store_token(
@@ -2823,16 +2888,17 @@ class NotebookManager:
                         [notebook['id']]
                     )
                     print(f"  ✓ Notebook linked to account: {account['username']}@{account.get('platform', 'github')}")
-            # ========== END FIX ==========
             
             print(f"\nNext steps:")
-            print(f"1. Use [S]ync to create the repository on GitHub and push your notebook")
+            print(f"1. Use [P]ush to create the repository on GitHub and push your notebook")
             print(f"2. The repository will be created as {'🔒 PRIVATE' if visibility == 'private' else '🔓 PUBLIC'}")
             print(f"3. You can change visibility anytime with the [V]isibility button")
+            
             notebook['git_config'] = self.get_notebook_config(notebook['id'])
             notebook['account'] = self.get_account_for_notebook(notebook['id'])
         else:
             print(f"\n✗ Failed to save configuration")
+        
         self.get_input("Press Enter to continue...")
 
     def create_repo(self, account, repo_name, token, visibility="private"):

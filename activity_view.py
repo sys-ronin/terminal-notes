@@ -38,14 +38,14 @@ class ActivityView:
                     current_path = [nb.name]
                 else:
                     current_path = current_path + [nb.name]
-    
+
                 # Store this notebook's UUID
                 uuid_to_path[nb.id] = current_path.copy()
-    
+
                 # Store all notes in this notebook
                 for note in nb.notes:
                     uuid_to_path[note.id] = current_path.copy()
-    
+
                 # Process subnotebooks recursively
                 for sub in nb.subnotebooks:
                     collect_uuids_with_path(sub, uuid_to_path, current_path)
@@ -89,7 +89,15 @@ class ActivityView:
                         rest = '\n'.join(lines[1:]) if len(lines) > 1 else ""
                         full_body = body + "\n" + rest
                     
+                        # 🔥 SKIP SECURITY COMMITS (password changes are not user activity)
+                        if subject.startswith('SECURITY:') or subject.startswith('type: SECURITY:'):
+                            continue
+                    
                         uuid = self._extract_uuid(subject, full_body)
+                    
+                        # Skip commits without a valid UUID (security commits have none)
+                        if not uuid:
+                            continue
                     
                         try:
                             date = datetime.strptime(date_str, "%Y-%m-%d %H:%M:%S %z")
@@ -111,13 +119,11 @@ class ActivityView:
                                 viewing_index = i
                                 break
                         
-                        
-
                         if viewing_index != -1:
                             # Item is at or below viewing notebook
                             # Build path RELATIVE to viewing notebook (viewing notebook becomes root)
                             relative_parts = path_parts[viewing_index:]
-    
+
                             if len(relative_parts) == 1:
                                 # Item is the viewing notebook itself
                                 display_name = f"[{viewing_notebook_name}]"
@@ -159,7 +165,7 @@ class ActivityView:
                         })
             except Exception:
                 pass
-    
+
         else:
             # Global mode - scan all root notebooks
             for nb in self.manager.notebooks:
@@ -185,7 +191,17 @@ class ActivityView:
                                         hash_, date_str, subject, body = parts
                                         rest_of_body = '\n'.join(lines[1:]) if len(lines) > 1 else ""
                                         full_body = body + "\n" + rest_of_body
+                                        
+                                        # 🔥 SKIP SECURITY COMMITS
+                                        if subject.startswith('SECURITY:') or subject.startswith('type: SECURITY:'):
+                                            continue
+                                        
                                         uuid = self._extract_uuid(subject, full_body)
+                                        
+                                        # Skip commits without UUID
+                                        if not uuid:
+                                            continue
+                                        
                                         try:
                                             date = datetime.strptime(date_str, "%Y-%m-%d %H:%M:%S %z")
                                         except ValueError:
