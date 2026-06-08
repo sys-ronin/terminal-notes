@@ -3,6 +3,102 @@
 > Encrypted terminal-based writing system with Git temporal history, powerful search, and zero-trust decoupled architecture.
 
 ---
+*text based screenshots*
+```
+
+                                 Root Notebooks                                 
+
+No notebooks yet.
+
+Create your first notebook to get started!
+
+or
+
+Press [M] to import existing from remote
+
+[C]reate  [M]anage  [Q]uit
+
+> 
+```
+```
+
+                                 Root Notebooks                                 
+
+[1] 🔒 aa
+[2] 🔐 terminal-notes (10 notes, 8 files, 1 sub)
+
+[C]reate  [V]iew  [S]earch  [D]elete  [L]ock  [M]anage  [Q]uit
+
+>
+```
+```
+
+     .../[1]depth05/[2]depth06/[3]depth07/[4]depth08/[5]depth09/[6]depth10/     
+
+Notes & Files: (2 notes, 4 files)
+[1] regular_internal_note                               [Updated: Jun 08 19:28]
+[2] regular_external_note                               [Updated: Jun 08 19:28]
+[3] index.html                                          [Updated: Jun 08 19:29]
+[4] Dockerfile                                          [Updated: Jun 08 20:05]
+[5] research.tex                                        [Updated: Jun 08 20:05]
+[6] .bashrc                                             [Updated: Jun 08 20:06]
+
+Sub-notebook: (1 sub)
+[7] View Sub-notebook =>
+
+[C]reate  [V]iew  [D]elete  [A]ctivity  [B]ack  [J]ump  [Q]uit
+
+>
+```
+```
+
+                                 Notebook: 🔐 aa                                 
+
+Type: 🔐 Encrypted (unlocked)
+Path: /home/user/terminal-notes/notebooks_root/aa-20262607180201
+
+Account: user-name@github
+Repository: aa-20262607180201
+Visibility: 🔒 PRIVATE
+Last modified: Jun 07, 2026 20:46
+
+Vault: default
+
+Notes: 4
+Files: 0
+Subnotebooks: 0
+
+[V]isibility  [S]ync  [D]elete  [C]hange  [A]ctivity  [B]ack  [Q]uit
+
+>
+```
+```
+
+                               [1]terminal-notes/                               
+
+File Name: new_post.md [.md file]
+Created: Jun 04  Updated: Jun 06 11:42
+
+Show HN: A terminal writing environment with git, e2ee sync and temporal
+search
+
+I am a 40 years old jobless sys-admin with no cs degree and no development
+experience and 25 yeras of system knowledge. I built a fully encrypted
+writing environment where I can write with focus forgetting about the
+application. Here ai was my code translator while I strictly was the
+architect and instructor. It all started when i asked myself that "why and
+how i remember any past memory instantly without searching inside my head".
+This became the design principle of my app. Thus I solved a fundamental git
+problem of tracking a single note throughout the history by embedding uuid
+in every commit.
+
+                                  Page 1 of 7    >>                             
+
+[E]dit  [V]iew  [X]port  [T]imeline  [R]ename  [B]ack  [N]ext  [Q]uit
+
+> 
+```
+---
 
 ## 📦 1. Requirements
 

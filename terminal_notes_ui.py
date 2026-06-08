@@ -457,21 +457,18 @@ class TerminalNotes:
     # UPDATED: Better jump detection
     def should_show_jump(self):
         current = self.nav.current()
-        if current and current["id"]:
-            notebook_id = current["id"]
-            number_map = self.get_numbered_path_info(notebook_id)
+        if not current or not current["id"]:
+            return False
 
-            # EXISTING: Show jump when there are multiple levels in hierarchy
-            if len(number_map) > 1:
-                return True
+        notebook_id = current["id"]
+        number_map = self.get_numbered_path_info(notebook_id)
 
-            # NEW: Show jump in root notebook view when there's jump history
-            if (
-                current["screen"] == "notebook"
-                and hasattr(self.nav, "jump_history")
-                and self.nav.jump_history
-            ):
-                return True
+        if len(number_map) > 1:
+            return True
+
+        root_id = self._get_root_notebook_id(notebook_id)
+        if root_id in self.jump_histories and len(self.jump_histories[root_id]) >= 1:
+            return True
 
         return False
 
@@ -508,28 +505,23 @@ class TerminalNotes:
             return self.process_home_command(cmd)
 
         # ========== FIX: Notebook-specific jump history helper ==========
+        # Helper function to check jump history
         def has_jump_history():
-            if not current or not current.get("id"):
-                return False
-            notebook_id = self._get_root_notebook_id(current["id"])
-            if not notebook_id:
-                return False
-            history = self.jump_histories.get(notebook_id, [])
-            return len(history) > 0
+            return (
+                hasattr(self.nav, "jump_history")
+                and self.nav.jump_history is not None
+                and len(self.nav.jump_history) > 0
+            )
+
         # ========== END FIX ==========
 
         # Handle JUMP BACK command (jb)
+        # Handle JUMP BACK command (jb)
         if cmd == "jb":
-            if has_jump_history():
-                current_position = self.jump_back()
-                if current_position:
-                    return "navigate"
-                else:
-                    print("No previous jump location to return to")
-                    self.get_input("Press Enter to continue...")
-                    return "continue"
+            if self.jump_back():
+                return "navigate"
             else:
-                print("No jump back history available")
+                print("No previous jump location to return to")
                 self.get_input("Press Enter to continue...")
                 return "continue"
 
@@ -717,61 +709,38 @@ class TerminalNotes:
 
         return "navigate"
     
-    def should_show_jump(self):
-        current = self.nav.current()
-        if current and current["id"]:
-            notebook_id = self._get_root_notebook_id(current["id"])
-            if notebook_id:
-                # Check if there's jump history for this notebook
-                history = self.jump_histories.get(notebook_id, [])
-                if history:
-                    return True
-            
-            number_map = self.get_numbered_path_info(notebook_id)
-            if len(number_map) > 1:
-                return True
-
-        return False
-
     def save_jump_position(self):
-        """Save current position for current notebook"""
         current = self.nav.current()
         if not current or not current["id"]:
             return
-        
-        notebook_id = self._get_root_notebook_id(current["id"])
-        if not notebook_id:
+        root_id = self._get_root_notebook_id(current["id"])
+        if not root_id:
             return
-        
-        # Initialize history for this notebook if needed
-        if notebook_id not in self.jump_histories:
-            self.jump_histories[notebook_id] = []
-        
-        # Save a copy of current stack
-        self.jump_histories[notebook_id].append(self.nav.stack.copy())
-        
-        # Limit history size
-        if len(self.jump_histories[notebook_id]) > 20:
-            self.jump_histories[notebook_id].pop(0)
+        if root_id not in self.jump_histories:
+            self.jump_histories[root_id] = []
+        stack_copy = self.nav.stack.copy()
+        if self.jump_histories[root_id] and self.jump_histories[root_id][-1] == stack_copy:
+            return
+        self.jump_histories[root_id].append(stack_copy)
+        if len(self.jump_histories[root_id]) > 20:
+            self.jump_histories[root_id].pop(0)
+
 
     def jump_back(self):
-        """Jump back to previous position in current notebook"""
         current = self.nav.current()
         if not current or not current["id"]:
             return None
-        
-        notebook_id = self._get_root_notebook_id(current["id"])
-        if not notebook_id:
+        root_id = self._get_root_notebook_id(current["id"])
+        if not root_id or root_id not in self.jump_histories:
             return None
-        
-        history = self.jump_histories.get(notebook_id, [])
-        if not history:
+        if len(self.jump_histories[root_id]) == 0:
             return None
-        
-        previous_position = history.pop()
-        self.nav.stack = previous_position
+        previous = self.jump_histories[root_id][-1]
+        self.jump_histories[root_id] = []
+        self.nav.stack = previous
         self.nav.replace_page(0)
         return self.nav.current()
+
 
     def _get_root_notebook_id(self, notebook_id):
         """Get root notebook ID from any notebook ID"""
@@ -3065,7 +3034,8 @@ class TerminalNotes:
                 
                 # Check if content is EMPTY
                 if not final_norm:
-                    print("\n  ⚠️ No content provided. File not saved.")
+                    print("No content provided. File not saved.")
+                    input("Press Enter to continue...")
                     # Clean up any existing recovery file
                     recovery_filename = self.recovery_system.get_recovery_filename(
                         note_uuid, note_title, bool(file_extension), file_extension
@@ -3077,7 +3047,8 @@ class TerminalNotes:
                 
                 # Check if content is IDENTICAL to initial (no changes made)
                 if initial_norm == final_norm:
-                    print("\n  ⚠️ No changes made. File not saved.")
+                    print("No changes made. File not saved.")
+                    input("Press Enter to continue...")
                     # Clean up any existing recovery file
                     recovery_filename = self.recovery_system.get_recovery_filename(
                         note_uuid, note_title, bool(file_extension), file_extension
@@ -3976,7 +3947,7 @@ class TerminalNotes:
             
             print(f"\n  Opening external editor for '{filename}'...")
             
-            # Edit with recovery
+            # Edit with recovery - this already shows message and pauses if no changes
             content = self.external_editor_with_recovery(
                 initial_content=initial_content,
                 read_only=False,
@@ -3986,26 +3957,8 @@ class TerminalNotes:
                 note_title=filename
             )
             
-            # 🟢 CHECK 1: No content
-            if not content or not content.strip():
-                print("\n  File creation cancelled - no content provided.")
-                recovery_filename = self.recovery_system.get_recovery_filename(
-                    temp_note.id, filename, True, extension
-                )
-                recovery_path = self.recovery_system.recovery_dir / recovery_filename
-                if recovery_path.exists():
-                    recovery_path.unlink()
-                return False, None
-            
-            # 🟢 CHECK 2: Content equals template (no changes)
-            if initial_content and content.strip() == initial_content.strip():
-                print("\n  File creation cancelled - no changes made to template.")
-                recovery_filename = self.recovery_system.get_recovery_filename(
-                    temp_note.id, filename, True, extension
-                )
-                recovery_path = self.recovery_system.recovery_dir / recovery_filename
-                if recovery_path.exists():
-                    recovery_path.unlink()
+            # If None returned, message already shown
+            if content is None:
                 return False, None
             
             # Save the file note
@@ -4041,16 +3994,27 @@ class TerminalNotes:
 
             # Display categories
             print("Select file category or type filename directly:\n")
-            
+
+            # Calculate available width for extensions
+            term_width = self.terminal_width
+            cat_name_max = max(len(cat['name']) for cat in categories) + 2
+            available_width = term_width - cat_name_max - 6
+
             for idx, cat in enumerate(categories, 1):
                 extensions_list = [ext['ext'] for ext in cat['extensions']]
-                preview = ", ".join(extensions_list[:6])
-                if len(extensions_list) > 6:
-                    preview += f" +{len(extensions_list) - 6}"
-                print(f"  {idx}. {cat['name']:<15} ({preview})")
-            
+                extensions_str = ", ".join(extensions_list)
+                
+                if len(extensions_str) > available_width:
+                    truncated = extensions_str[:available_width - 3]
+                    last_comma = truncated.rfind(',')
+                    if last_comma > 0:
+                        truncated = truncated[:last_comma]
+                    extensions_str = truncated + "..."
+                
+                print(f"{idx}. {cat['name']:<{cat_name_max-2}} {extensions_str}")
+
             print()
-            print("  • Enter catagory number or type filename directly (e.g., index.html, .bashrc)")
+            print("• Enter category number or type filename directly (e.g., index.html, .bashrc)")
             print()
 
             user_input = self.get_input("> ", preserve_case=True).strip()
@@ -4058,7 +4022,7 @@ class TerminalNotes:
             if not user_input:
                 return "continue"
             
-            # Check if input is a number (category selection)
+            # ========== HANDLE CATEGORY NUMBER SELECTION ==========
             if user_input.isdigit():
                 cat_idx = int(user_input) - 1
                 if cat_idx < 0 or cat_idx >= len(categories):
@@ -4114,113 +4078,175 @@ class TerminalNotes:
                         print(line.rstrip())
                     
                     print()
-                    print("  Press Enter to cancel")
+                    print("  • Enter number to select extension, or type filename directly (e.g., index.html, .bashrc)")
                     print()
-                    
-                    ext_choice = self.get_input(f"Choose [1-{total_items}] or Enter to cancel: ")
+
+                    ext_choice = self.get_input(f"Choose [1-{total_items}] or type filename: ")
                     if not ext_choice:
                         break
-                    
-                    try:
-                        ext_idx = int(ext_choice) - 1
-                        if ext_idx < 0 or ext_idx >= total_items:
-                            raise ValueError
-                    except ValueError:
-                        print("Invalid choice.")
-                        self.get_input("Press Enter to continue...")
-                        continue
-                    
-                    ext_info = extensions[ext_idx]
-                    extension = ext_info['ext']
-                    special = ext_info['special']
-                    fixed_filename = ext_info['filename']
-                    
-                    # Determine filename
-                    if special and fixed_filename:
-                        filename = fixed_filename
-                        self.clear_screen()
-                        self.print_header(f"Create: {extension}")
-                        print(f"\n  📄 This file will be saved as: {filename}")
-                        print(f"     (filename is fixed for this file type)")
-                        print()
-                        self.get_input("  Press Enter to continue")
-                    else:
-                        self.clear_screen()
-                        self.print_header(f"Create: {extension}")
-                        print(f"\n  Enter filename (without .{extension} extension):")
-                        print(f"  Example: my_script → my_script.{extension}")
-                        print()
-                        name_input = self.get_input("  Filename (Enter to cancel): ")
-                        if not name_input:
-                            continue
-                        name_input = name_input.strip().replace(' ', '_').replace('/', '_')
-                        if not name_input:
-                            print("  Invalid filename.")
+
+                    # Check if input is a number (extension selection)
+                    if ext_choice.isdigit():
+                        try:
+                            ext_idx = int(ext_choice) - 1
+                            if ext_idx < 0 or ext_idx >= total_items:
+                                raise ValueError
+                        except ValueError:
+                            print("Invalid choice.")
                             self.get_input("Press Enter to continue...")
                             continue
-                        filename = f"{name_input}.{extension}"
-                    
-                    # Create the file
-                    success, result = create_file_from_ext(extension, filename)
-                    
-                    if success:
-                        print(f"\n  ✓ File '{filename}' created successfully")
                         
-                        # Refresh navigation
-                        self.manager.load_all_notebooks(quiet=True)
-                        updated_notebook = self.manager.find_notebook_by_id(notebook.id)
-                        if updated_notebook:
-                            current = self.nav.current()
-                            if current and current['screen'] == 'notebook' and current['id'] == notebook.id:
-                                terminal_width, terminal_height = shutil.get_terminal_size()
-                                fresh_total = len(updated_notebook.notes)
-                                fixed_lines = 3 + 1 + 2 + 3
-                                if updated_notebook.subnotebooks:
-                                    fixed_lines += 2
-                                available = terminal_height - fixed_lines
-                                items_per_page = int(available * 0.9)
-                                items_per_page = max(1, items_per_page)
-                                total_pages = (fresh_total + items_per_page - 1) // items_per_page if fresh_total > 0 else 1
-                                if total_pages > 0:
-                                    self.nav.replace_page(total_pages - 1)
-                                else:
-                                    self.nav.replace_page(0)
+                        ext_info = extensions[ext_idx]
+                        extension = ext_info['ext']
+                        special = ext_info['special']
+                        fixed_filename = ext_info['filename']
                         
-                        self._just_created = True
-                        self.get_input("\nPress Enter to continue...")
-                        return "navigate"
+                        # Determine filename
+                        if special and fixed_filename:
+                            filename = fixed_filename
+                            self.clear_screen()
+                            self.print_header(f"Create: {extension}")
+                            print(f"\n  📄 This file will be saved as: {filename}")
+                            print(f"     (filename is fixed for this file type)")
+                            print()
+                            self.get_input("  Press Enter to continue")
+                        else:
+                            self.clear_screen()
+                            self.print_header(f"Create: {extension}")
+                            print(f"\n  Enter filename (without .{extension} extension):")
+                            print(f"  Example: my_script → my_script.{extension}")
+                            print()
+                            name_input = self.get_input("  Filename (Enter to cancel): ")
+                            if not name_input:
+                                continue
+                            name_input = name_input.strip().replace(' ', '_').replace('/', '_')
+                            if not name_input:
+                                print("  Invalid filename.")
+                                self.get_input("Press Enter to continue...")
+                                continue
+                            filename = f"{name_input}.{extension}"
+                        
+                        # Create the file
+                        success, result = create_file_from_ext(extension, filename)
+                        
+                        if success:
+                            print(f"\n  ✓ File '{filename}' created successfully")
+                            
+                            # Refresh navigation
+                            self.manager.load_all_notebooks(quiet=True)
+                            updated_notebook = self.manager.find_notebook_by_id(notebook.id)
+                            if updated_notebook:
+                                current = self.nav.current()
+                                if current and current['screen'] == 'notebook' and current['id'] == notebook.id:
+                                    terminal_width, terminal_height = shutil.get_terminal_size()
+                                    fresh_total = len(updated_notebook.notes)
+                                    fixed_lines = 3 + 1 + 2 + 3
+                                    if updated_notebook.subnotebooks:
+                                        fixed_lines += 2
+                                    available = terminal_height - fixed_lines
+                                    items_per_page = int(available * 0.9)
+                                    items_per_page = max(1, items_per_page)
+                                    total_pages = (fresh_total + items_per_page - 1) // items_per_page if fresh_total > 0 else 1
+                                    if total_pages > 0:
+                                        self.nav.replace_page(total_pages - 1)
+                                    else:
+                                        self.nav.replace_page(0)
+                            
+                            self._just_created = True
+                            self.get_input("\nPress Enter to continue...")
+                            return "navigate"
+                        else:
+                            if result is None:
+                                break
+                            else:
+                                print(f"\n  ✗ {result}")
+                                self.get_input("Press Enter to continue...")
+                                break
+
                     else:
-                        print(f"\n  ✗ {result}")
-                        self.get_input("Press Enter to continue...")
-                        continue
+                        # ========== DIRECT FILENAME INPUT FROM CATEGORY SUBMENU ==========
+                        filename = ext_choice.strip()
+                        
+                        if '.' in filename:
+                            parts = filename.rsplit('.', 1)
+                            name_part = parts[0]
+                            extension = parts[1].lower()
+                            
+                            if not name_part:
+                                print("\n  ✗ Invalid: Filename must have a name before the extension")
+                                self.get_input("Press Enter to continue...")
+                                continue
+                            
+                            if extension not in all_extensions:
+                                print(f"\n  ✗ Unsupported extension: .{extension}")
+                                self.get_input("Press Enter to continue...")
+                                continue
+                            
+                            success, result = create_file_from_ext(extension, filename)
+                            
+                            if success:
+                                print(f"\n  ✓ File '{filename}' created successfully")
+                                self.manager.load_all_notebooks(quiet=True)
+                                self._just_created = True
+                                self.get_input("\nPress Enter to continue...")
+                                return "navigate"
+                            else:
+                                if result is None:
+                                    break
+                                else:
+                                    print(f"\n  ✗ {result}")
+                                    self.get_input("Press Enter to continue...")
+                                    break
+                        else:
+                            if filename in special_files:
+                                extension = filename
+                                fixed_filename = special_files[filename]
+                                
+                                success, result = create_file_from_ext(extension, fixed_filename)
+                                
+                                if success:
+                                    print(f"\n  ✓ File '{fixed_filename}' created successfully")
+                                    self.manager.load_all_notebooks(quiet=True)
+                                    self._just_created = True
+                                    self.get_input("\nPress Enter to continue...")
+                                    return "navigate"
+                                else:
+                                    if result is None:
+                                        break
+                                    else:
+                                        print(f"\n  ✗ {result}")
+                                        self.get_input("Press Enter to continue...")
+                                        break
+                            else:
+                                print(f"\n  ✗ Invalid: '{filename}' is not a valid filename")
+                                print("     Regular files: name.extension (e.g., index.html)")
+                                print("     Special files: .bashrc or Dockerfile")
+                                self.get_input("Press Enter to continue...")
+                                continue
                 
                 continue
             
-            # ========== DIRECT FILENAME INPUT ==========
+            # ========== DIRECT FILENAME INPUT AT MAIN MENU LEVEL ==========
             else:
-                filename = user_input
+                filename = user_input.strip()
                 
-                # Parse extension from filename
                 if '.' in filename:
                     parts = filename.rsplit('.', 1)
                     name_part = parts[0]
                     extension = parts[1].lower()
                     
-                    # Validate: name part cannot be empty
                     if not name_part:
                         print("\n  ✗ Invalid: Filename must have a name before the extension")
                         print("     Example: my_script.py")
-                        self.get_input("\nPress Enter to continue...")
+                        self.get_input("Press Enter to continue...")
                         continue
                     
-                    # Check if extension is supported
                     if extension not in all_extensions:
                         print(f"\n  ✗ Unsupported extension: .{extension}")
                         print("     Use category menu to see supported extensions")
-                        self.get_input("\nPress Enter to continue...")
+                        self.get_input("Press Enter to continue...")
                         continue
                     
-                    # Create regular file
                     success, result = create_file_from_ext(extension, filename)
                     
                     if success:
@@ -4230,17 +4256,17 @@ class TerminalNotes:
                         self.get_input("\nPress Enter to continue...")
                         return "navigate"
                     else:
-                        print(f"\n  ✗ {result}")
-                        self.get_input("Press Enter to continue...")
-                        continue
-                
+                        if result is None:
+                            continue
+                        else:
+                            print(f"\n  ✗ {result}")
+                            self.get_input("Press Enter to continue...")
+                            continue
                 else:
-                    # No dot - check if it's a special file
                     if filename in special_files:
                         extension = filename
                         fixed_filename = special_files[filename]
                         
-                        # Create special file
                         success, result = create_file_from_ext(extension, fixed_filename)
                         
                         if success:
@@ -4250,14 +4276,17 @@ class TerminalNotes:
                             self.get_input("\nPress Enter to continue...")
                             return "navigate"
                         else:
-                            print(f"\n  ✗ {result}")
-                            self.get_input("Press Enter to continue...")
-                            continue
+                            if result is None:
+                                continue
+                            else:
+                                print(f"\n  ✗ {result}")
+                                self.get_input("Press Enter to continue...")
+                                continue
                     else:
                         print(f"\n  ✗ Invalid: '{filename}' is not a valid filename")
                         print("     Regular files: name.extension (e.g., index.html)")
                         print("     Special files: .bashrc or Dockerfile")
-                        self.get_input("\nPress Enter to continue...")
+                        self.get_input("Press Enter to continue...")
                         continue
         
         return "continue"
