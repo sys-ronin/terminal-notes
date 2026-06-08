@@ -147,8 +147,9 @@ class ActivityView:
                                     display_name = f"[.../{path_parts[-2]}/{path_parts[-1]}]"
 
                         crypto = None
-                        if hasattr(notebook, '_crypto'):
-                            crypto = notebook._crypto
+                        # Always use the root notebook's crypto (subnotebooks don't have their own)
+                        if hasattr(root, '_crypto'):
+                            crypto = root._crypto
 
                         all_commits.append({
                             'hash': hash_,

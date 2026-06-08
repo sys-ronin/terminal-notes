@@ -1,9 +1,9 @@
 # 📓 Terminal Notes
 
-> Encrypted terminal-based writing system with Git temporal history, powerful search, and zero-trust decoupled architecture.
+> Encrypted terminal-based writing system with Git temporal history, powerful search, GDPR erase and zero-trust decoupled architecture.
 
 ---
-*text based screenshots*
+*text-based screenshots*
 ```
 
                                  Root Notebooks                                 
@@ -22,14 +22,92 @@ Press [M] to import existing from remote
 ```
 ```
 
+                            Create / Import Notebook                            
+
+1. Default location (notebooks_root/)
+   → Quick creation in app's default directory
+
+2. External location (USB/Network drive) 🔒 MORE SECURE
+   → Choose any folder on your system
+   → Perfect for encrypted notebooks on USB drives
+   → Easy to backup, sync with cloud, or store on encrypted drive
+
+3. Import existing notebook
+   → Load an existing Terminal Notes notebook from local path
+   → Must contain structure.json and Git history
+
+4. Import from Git URL
+   → Clone and import a notebook from GitHub/GitLab/Bitbucket
+   → Enter repository URL (must end with .git)
+   → Will prompt for account credentials if needed
+
+
+Choose [1-4] or Enter to cancel: 
+```
+```
+
+────────────────────────────────────────────────────────────
+  YOUR RECOVERY PHRASE
+────────────────────────────────────────────────────────────
+
+  abstract asset offer fiber attend earth reopen walnut
+
+  Store this phrase safely!
+
+  • Write it down on paper
+  • Save it in a password manager
+  • Take a photo (store securely)
+
+  [Y] Yes, I've saved it  [C] Copy to clipboard
+
+  > y
+
+  Press Enter when you have written it down.
+
+
+  Notebook created successfully!
+   Name: aa
+   Folder: aa-20262609002928
+   Location: /home/user/terminal-notes/notebooks_root/aa-20262609002928
+   🔐 Encrypted with password + recovery phrase
+   Recovery phrase saved - store it safely!
+
+Press Enter to continue...
+```
+```
+
+                         user-name@github.com Notebooks                         
+
+[1] 🔒 project-alpha [Private]
+[2] 🔒 aa [Public]
+
+[I]mport  [R]efresh  [B]ack  [Q]uit
+
+> i1
+```
+```
+
                                  Root Notebooks                                 
 
 [1] 🔒 aa
-[2] 🔐 terminal-notes (10 notes, 8 files, 1 sub)
+[2] 🔐 terminal-notes (10 notes, 7 files, 1 sub)
 
 [C]reate  [V]iew  [S]earch  [D]elete  [L]ock  [M]anage  [Q]uit
 
->
+> l1
+
+  ❌ Vault file not found: /home/user/terminal-notes/config/session.vault
+     This notebook uses the default vault.
+     This notebook requires the vault file to unlock.
+     Please insert the USB drive or locate the vault file.
+
+  Options:
+    1) Retry (I've inserted the USB drive)
+    2) Locate vault file manually
+    3) Use recovery phrase (will create new vault)
+    4) Cancel
+
+  Choose [1-4]:
 ```
 ```
 
@@ -47,28 +125,6 @@ Sub-notebook: (1 sub)
 [7] View Sub-notebook =>
 
 [C]reate  [V]iew  [D]elete  [A]ctivity  [B]ack  [J]ump  [Q]uit
-
->
-```
-```
-
-                                 Notebook: 🔐 aa                                 
-
-Type: 🔐 Encrypted (unlocked)
-Path: /home/user/terminal-notes/notebooks_root/aa-20262607180201
-
-Account: user-name@github
-Repository: aa-20262607180201
-Visibility: 🔒 PRIVATE
-Last modified: Jun 07, 2026 20:46
-
-Vault: default
-
-Notes: 4
-Files: 0
-Subnotebooks: 0
-
-[V]isibility  [S]ync  [D]elete  [C]hange  [A]ctivity  [B]ack  [Q]uit
 
 >
 ```
@@ -97,6 +153,90 @@ in every commit.
 [E]dit  [V]iew  [X]port  [T]imeline  [R]ename  [B]ack  [N]ext  [Q]uit
 
 > 
+```
+```
+
+                         Activity: aa and subnotebooks                          
+
+[1] erased file: scipt.sh                                                [root]
+[2] renamed note: regular_internal_note → regul...        [.../depth09/depth10]
+[3] updated file: index.html 65(+) 3(-)                   [.../depth09/depth10]
+[4] updated file: index.html 5(+) 5(-)                    [.../depth09/depth10]
+[5] restored note: regular_internal_note                  [.../depth09/depth10]
+[6] deleted note: regular_internal_note                   [.../depth09/depth10]
+[7] erased note: regular_external_note                    [.../depth09/depth10]
+[8] updated note: regular_internal_note 6(+) 0(-)         [.../depth09/depth10]
+[9] created sub: depth11                                  [.../depth10/depth11]
+[10] created file: .bashrc 178(+)                                        [root]
+[11] created file: research.tex 62(+)                                    [root]
+[12] created file: Dockerfile 255(+)                                     [root]
+[13] created file: index.html 94(+)                       [.../depth09/depth10]
+[14] created note: ff 3(+)                                               [root]
+[15] created note: a 1(+)                                                [root]
+
+                                  Page 1 of 2    >>                             
+
+[V]iew  [B]ack  [N]ext  [Q]uit
+
+>  
+```
+```
+
+                              Timeline: 4 versions                              
+
+[1] 2026-06-09 00:13 [RENAMED] regular_internal_note  → regular_internal_...
+[2] 2026-06-09 00:09 [RESTORED]
+[3] 2026-06-09 00:09 [DELETED]
+[4] 2026-06-09 00:06 [UPDATED] 6(+) 0(-)
+
+[V]iew  [B]ack
+
+> 
+```
+```
+
+                                 Notebook: 🔐 aa                                 
+
+Type: 🔐 Encrypted (unlocked)
+Path: /home/user/terminal-notes/notebooks_root/aa-20262607180201
+
+Account: user-name@github
+Repository: aa-20262607180201
+Visibility: 🔒 PRIVATE
+Last modified: Jun 07, 2026 20:46
+
+Vault: default
+
+Notes: 4
+Files: 0
+Subnotebooks: 0
+
+[V]isibility  [S]ync  [D]elete  [C]hange  [A]ctivity  [B]ack  [Q]uit
+
+>
+```
+```
+
+                              Change Options - aa                               
+
+
+  [1] Change password
+  [2] Change Autolock status
+  [3] Change remote location
+  [4] Change trusted device status
+  [5] Change vault location
+
+  Press Enter to cancel
+
+  Choose:
+```
+```
+꘎ SECURELY ERASING ENTIRE NOTEBOOK: aa
+  This will DELETE ALL COMMITS and remove the folder permanently!
+
+  Repository: /home/user/terminal-notes/notebooks_root/aa-20262607180201
+
+  Enter notebook password to confirm erasure (3 attempts):
 ```
 ---
 
