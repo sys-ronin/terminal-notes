@@ -3008,6 +3008,7 @@ class TerminalNotes:
     def external_editor_with_recovery(self, initial_content="", read_only=False, 
                                     file_extension=None, note_uuid=None, 
                                     parent_notebook_uuid=None, note_title=""):
+        """External editor with autosave recovery - returns None if no changes made"""
         suffix = f".{file_extension}" if file_extension else ".txt"
         with tempfile.NamedTemporaryFile(mode="w+", suffix=suffix, delete=False, encoding="utf-8") as f:
             if initial_content:
@@ -3048,7 +3049,45 @@ class TerminalNotes:
             with open(temp_path, "r", encoding="utf-8") as f:
                 final_content = f.read()
         
+            # ========== NORMALIZATION AND CHANGE DETECTION ==========
+            def normalize(s):
+                """Normalize string for comparison: strip whitespace, normalize line endings"""
+                if s is None:
+                    return ""
+                # Normalize line endings (Windows CRLF -> LF, old Mac CR -> LF)
+                normalized = s.replace('\r\n', '\n').replace('\r', '\n')
+                # Strip leading/trailing whitespace (including newlines)
+                return normalized.strip()
+            
             if not read_only and note_uuid:
+                initial_norm = normalize(initial_content)
+                final_norm = normalize(final_content)
+                
+                # Check if content is EMPTY
+                if not final_norm:
+                    print("\n  ⚠️ No content provided. File not saved.")
+                    # Clean up any existing recovery file
+                    recovery_filename = self.recovery_system.get_recovery_filename(
+                        note_uuid, note_title, bool(file_extension), file_extension
+                    )
+                    recovery_path = self.recovery_system.recovery_dir / recovery_filename
+                    if recovery_path.exists():
+                        recovery_path.unlink()
+                    return None
+                
+                # Check if content is IDENTICAL to initial (no changes made)
+                if initial_norm == final_norm:
+                    print("\n  ⚠️ No changes made. File not saved.")
+                    # Clean up any existing recovery file
+                    recovery_filename = self.recovery_system.get_recovery_filename(
+                        note_uuid, note_title, bool(file_extension), file_extension
+                    )
+                    recovery_path = self.recovery_system.recovery_dir / recovery_filename
+                    if recovery_path.exists():
+                        recovery_path.unlink()
+                    return None
+                
+                # Changes detected - save recovery file and proceed
                 self.recovery_system.save_recovery_file(
                     note_uuid, parent_notebook_uuid, final_content, note_title,
                     bool(file_extension), file_extension
@@ -3061,7 +3100,7 @@ class TerminalNotes:
                     recovery_path.unlink()
         
             return final_content
-    
+
         finally:
             try:
                 os.unlink(temp_path)
@@ -3808,10 +3847,186 @@ class TerminalNotes:
         return self.get_input("Choose [1-3]: ")
 
     def create_file_note(self, notebook):
+        """Create a specialized file note - direct filename input or category selection"""
+        
+        # ========== DATA STRUCTURE ==========
+        categories_data = {
+            "Web": [
+                "astro", "css", "graphql", "html", "js", "jsx", "mdx", 
+                "pug", "scss", "svelte", "ts", "vue", "wasm"
+            ],
+            "Backend": [
+                "c", "cpp", "crystal", "d", "go", "java", "jl", "lua", 
+                "nim", "php", "pl", "py", "r", "rb", "rs", "zig"
+            ],
+            "Mobile": [
+                "kt", "swift"
+            ],
+            "DevOps": [
+                "cfg", "dockerignore", "env", "hcl", "ini", "justfile", 
+                "nix", "sh", "tf", "toml", "yaml", "yml"
+            ],
+            "Data": [
+                "hjson", "json", "proto", "ron", "sql", "xml"
+            ],
+            "Documentation": [
+                "adoc", "bib", "cls", "md", "org", "rst", "sty", "tex", "txt", "typ", "wiki"
+            ],
+            "Config Files": [
+                "aliases", "bash_profile", "bashrc", "curlrc", "editorconfig", "fish",
+                "gitmessage", "inputrc", "irbrc", "lua", "mailmap", "profile", 
+                "screenrc", "vimrc", "wgetrc", "Xresources", "zprofile", "zshrc"
+            ],
+            "Git": [
+                "gitattributes", "gitconfig", "gitignore"
+            ],
+            "Runtime": [
+                "gemrc", "npmrc", "Rprofile", "yarnrc"
+            ],
+            "App Configs": [
+                "tmux.conf"
+            ],
+            "CI/CD": [
+                "bat", "cmake", "Dockerfile", "gitlab-ci.yml", "Jenkinsfile", "ps1", "service", "timer"
+            ],
+        }
+        
+        # Special files with their exact filenames
+        special_files = {
+            "bashrc": ".bashrc",
+            "zshrc": ".zshrc",
+            "profile": ".profile",
+            "aliases": ".aliases",
+            "bash_profile": ".bash_profile",
+            "zprofile": ".zprofile",
+            "vimrc": ".vimrc",
+            "lua": "init.lua",
+            "editorconfig": ".editorconfig",
+            "screenrc": ".screenrc",
+            "wgetrc": ".wgetrc",
+            "curlrc": ".curlrc",
+            "fish": "config.fish",
+            "gitmessage": ".gitmessage",
+            "mailmap": ".mailmap",
+            "gitconfig": ".gitconfig",
+            "gitignore": ".gitignore",
+            "gitattributes": ".gitattributes",
+            "npmrc": ".npmrc",
+            "yarnrc": ".yarnrc",
+            "gemrc": ".gemrc",
+            "Rprofile": ".Rprofile",
+            "irbrc": ".irbrc",
+            "tmux.conf": ".tmux.conf",
+            "inputrc": ".inputrc",
+            "Xresources": ".Xresources",
+            "justfile": "justfile",
+            "dockerignore": ".dockerignore",
+            "env": ".env",
+            "Dockerfile": "Dockerfile",
+            "Jenkinsfile": "Jenkinsfile",
+            "gitlab-ci.yml": ".gitlab-ci.yml",
+            "cmake": "CMakeLists.txt",
+        }
+        
+        # Build categories list dynamically
+        categories = []
+        for cat_name, extensions in categories_data.items():
+            extensions.sort()
+            ext_list = []
+            for ext in extensions:
+                ext_list.append({
+                    "ext": ext,
+                    "special": ext in special_files,
+                    "filename": special_files.get(ext, None)
+                })
+            categories.append({
+                "name": cat_name,
+                "extensions": ext_list
+            })
+        
+        # Build all extensions set for validation
+        all_extensions = set()
+        for cat in categories:
+            for ext in cat['extensions']:
+                all_extensions.add(ext['ext'])
+        
+        # Helper function to create file from extension and filename
+        def create_file_from_ext(extension, filename):
+            """Create file from extension and filename (internal helper)"""
+            # Find extension info
+            ext_info = None
+            for cat in categories:
+                for ext in cat['extensions']:
+                    if ext['ext'] == extension:
+                        ext_info = ext
+                        break
+                if ext_info:
+                    break
+            
+            if not ext_info:
+                return False, f"Unsupported extension: {extension}"
+            
+            # Get initial content
+            initial_content = self.get_initial_content_for_extension(extension)
+            
+            # Create temp note for recovery
+            from terminal_notes_core import Note
+            temp_note = Note(filename, "", created_with="external")
+            temp_note.file_extension = extension
+            
+            print(f"\n  Opening external editor for '{filename}'...")
+            
+            # Edit with recovery
+            content = self.external_editor_with_recovery(
+                initial_content=initial_content,
+                read_only=False,
+                file_extension=extension,
+                note_uuid=temp_note.id,
+                parent_notebook_uuid=notebook.id,
+                note_title=filename
+            )
+            
+            # 🟢 CHECK 1: No content
+            if not content or not content.strip():
+                print("\n  File creation cancelled - no content provided.")
+                recovery_filename = self.recovery_system.get_recovery_filename(
+                    temp_note.id, filename, True, extension
+                )
+                recovery_path = self.recovery_system.recovery_dir / recovery_filename
+                if recovery_path.exists():
+                    recovery_path.unlink()
+                return False, None
+            
+            # 🟢 CHECK 2: Content equals template (no changes)
+            if initial_content and content.strip() == initial_content.strip():
+                print("\n  File creation cancelled - no changes made to template.")
+                recovery_filename = self.recovery_system.get_recovery_filename(
+                    temp_note.id, filename, True, extension
+                )
+                recovery_path = self.recovery_system.recovery_dir / recovery_filename
+                if recovery_path.exists():
+                    recovery_path.unlink()
+                return False, None
+            
+            # Save the file note
+            from notebook_operations import NotebookOperations
+            ops = NotebookOperations(self.manager)
+            ops.create_file(notebook, filename, content.strip(), extension)
+            
+            # Clean up recovery file
+            recovery_filename = self.recovery_system.get_recovery_filename(
+                temp_note.id, filename, True, extension
+            )
+            recovery_path = self.recovery_system.recovery_dir / recovery_filename
+            if recovery_path.exists():
+                recovery_path.unlink()
+            
+            return True, filename
+        
         while True:
             self.clear_screen()
-        
-            # Get the full path for the notebook
+            
+            # Get display path
             hierarchy = self.manager.get_notebook_hierarchy(notebook.id)
             if hierarchy and len(hierarchy) > 1:
                 path_names = [nb.name for nb in hierarchy]
@@ -3821,156 +4036,236 @@ class TerminalNotes:
                     display_path = ".../" + "/".join(path_names[-3:])
             else:
                 display_path = notebook.name
-    
+
             self.print_header(f"Create Specialized File in: {display_path}")
 
-            # Show organized extension list
-            print("Supported file formats (80+):")
-            print()
-    
-            # Group extensions by category - compact format
-            categories = {
-                "Web:    ": ["html", "js", "css", "ts", "scss", "vue", "jsx", "svelte", "astro", "mdx", "graphql"],
-                "Backend:": ["py", "php", "rb", "java", "c", "cpp", "go", "rs", "pl", "lua", "r", "jl"],
-                "Mobile: ": ["swift", "kt"],
-                "DevOps: ": ["sh", "yml", "yaml", "toml", "ini", "cfg", "hcl", "tf", "justfile", "nix"],
-                "Data:   ": ["json", "xml", "sql", "proto"],
-                "Docs:   ": ["bib", "tex", "md", "txt", "sty", "cls", "org", "adoc", "rst", "typ"],
-                "Config: ": ["bashrc", "zshrc", "profile", "aliases", "bash_profile", "zprofile", "vimrc", "lua", "editorconfig"],
-                "Git:    ": ["gitconfig", "gitignore", "gitattributes"],
-                "Runtime:": ["npmrc", "yarnrc", "gemrc", "Rprofile", "irbrc"],
-                "Apps:   ": ["tmux.conf", "inputrc", "Xresources", "ssh/config"],
-                "CI:     ": ["Dockerfile", "Jenkinsfile", "service", "timer"]
-            }
-    
-            for category, exts in categories.items():
-                ext_list = ", ".join(exts)
-                print(f"{category:12} {ext_list}")
-    
-            print()
-            print("" * self.terminal_width)
-            print()
-
-            filename = self.get_input("File name (with extension) [blank to cancel]: ")
-            if not filename.strip():
-                return
-
-            if "." not in filename:
-                print("Error: File must have an extension (e.g., '.py', '.html')")
-                self.get_input("Press Enter to try again...")
-                continue
-
-            extension = filename.split(".")[-1].lower()
-            if extension not in self.allowed_extensions:
-                print(f"Error: Extension '.{extension}' not allowed")
-                self.get_input("Press Enter to try again...")
-                continue
-
-            # Get initial content hint
-            initial_content = self.get_initial_content_for_extension(extension)
-        
-            # Create the note object
-            from terminal_notes_core import Note
-            note = Note(filename, "", created_with="external")
-            note.file_extension = extension
-        
-            print(f"\nOpening external editor for '{filename}'...")
-        
-            # Edit with recovery
-            content = self.external_editor_with_recovery(
-                initial_content=initial_content,
-                read_only=False,
-                file_extension=extension,
-                note_uuid=note.id,
-                parent_notebook_uuid=notebook.id,
-                note_title=filename
-            )
-        
-            if not content or not content.strip():
-                print("\nFile creation cancelled - no content provided.")
-                self.get_input("Press Enter to continue...")
-                return "continue"
-        
-            if content == initial_content:
-                print("\nFile creation cancelled - no changes made.")
-                self.get_input("Press Enter to continue...")
-                return "continue"
-        
-            # NOW save with content
-            note.content = content.strip()
-        
-            # 🟢 FIX: Use ops.create_file to add the note (this adds it to notebook.notes)
-            from notebook_operations import NotebookOperations
-            ops = NotebookOperations(self.manager)
-            ops.create_file(notebook, filename, content.strip(), extension)
-        
-            file_count = sum(1 for n in notebook.notes if n.is_file_note)
-            regular_count = len(notebook.notes) - file_count
+            # Display categories
+            print("Select file category or type filename directly:\n")
             
-        
-            # Find root notebook for saving
-            root = self.manager._find_root_notebook(notebook)
-        
-            # Update the notebook in the manager's notebook list
-            for i, nb in enumerate(self.manager.notebooks):
-                if nb.id == root.id:
-                    self.manager.notebooks[i] = root
-                    break
-        
-            # If this is a subnotebook, also update it in its parent's structure
-            if notebook.id != root.id:
-                # Find and update the notebook in the manager's hierarchy
-                for i, root_nb in enumerate(self.manager.notebooks):
-                    if root_nb.id == root.id:
-                        # Recursively update the notebook in the hierarchy
-                        updated_root = self._update_notebook_in_hierarchy(root_nb, notebook.id, notebook)
-                        if updated_root:
-                            self.manager.notebooks[i] = updated_root
-                            break
-        
-            print(f"\n✓ File '{filename}' created successfully")
-        
-            # 🟢 Force refresh the manager's in-memory state
-            self.manager.load_all_notebooks(quiet=True)  # Force reload from disk
-        
-            # Find the updated notebook in the manager
-            updated_notebook = self.manager.find_notebook_by_id(notebook.id)
-            if updated_notebook:
-                file_count = sum(1 for n in updated_notebook.notes if n.is_file_note)
-                regular_count = len(updated_notebook.notes) - file_count
+            for idx, cat in enumerate(categories, 1):
+                extensions_list = [ext['ext'] for ext in cat['extensions']]
+                preview = ", ".join(extensions_list[:6])
+                if len(extensions_list) > 6:
+                    preview += f" +{len(extensions_list) - 6}"
+                print(f"  {idx}. {cat['name']:<15} ({preview})")
             
-                # Update the current navigation's notebook reference
-                current = self.nav.current()
-                if current and current['screen'] == 'notebook' and current['id'] == notebook.id:
-                    # We're still in the same notebook, so refresh the page
-                    terminal_width, terminal_height = shutil.get_terminal_size()
+            print()
+            print("  • Enter catagory number or type filename directly (e.g., index.html, .bashrc)")
+            print()
+
+            user_input = self.get_input("> ", preserve_case=True).strip()
+            
+            if not user_input:
+                return "continue"
+            
+            # Check if input is a number (category selection)
+            if user_input.isdigit():
+                cat_idx = int(user_input) - 1
+                if cat_idx < 0 or cat_idx >= len(categories):
+                    print("Invalid category number.")
+                    self.get_input("Press Enter to continue...")
+                    continue
                 
-                    # Get fresh counts
-                    fresh_file_count = sum(1 for note in updated_notebook.notes if note.is_file_note)
-                    fresh_total = len(updated_notebook.notes)
+                category = categories[cat_idx]
                 
-                    # Calculate total pages
-                    fixed_lines = 3 + 1 + 2 + 3
-                    if updated_notebook.subnotebooks:
-                        fixed_lines += 2
-                    available = terminal_height - fixed_lines
-                    items_per_page = int(available * 0.9)
-                    items_per_page = max(1, items_per_page)
-                
-                    total_pages = (fresh_total + items_per_page - 1) // items_per_page if fresh_total > 0 else 1
-                
-                    if total_pages > 0:
-                        self.nav.replace_page(total_pages - 1)  # Go to last page where new file appears
+                # Show extensions in selected category (multi-column)
+                while True:
+                    self.clear_screen()
+                    self.print_header(f"Create Specialized File in: {display_path}")
+                    print(f"Category: {category['name']}\n")
+                    
+                    extensions = category['extensions']
+                    total_items = len(extensions)
+                    
+                    if total_items == 0:
+                        print("  No extensions in this category.")
+                        self.get_input("Press Enter to continue...")
+                        break
+                    
+                    # Calculate multi-column layout
+                    term_width = self.terminal_width
+                    max_ext_len = max(len(ext['ext']) for ext in extensions)
+                    col_width = max_ext_len + 6
+                    cols = max(1, term_width // col_width)
+                    rows = (total_items + cols - 1) // cols
+                    
+                    # Build grid
+                    grid = []
+                    for r in range(rows):
+                        row = []
+                        for c in range(cols):
+                            idx = r + c * rows
+                            if idx < total_items:
+                                ext_info = extensions[idx]
+                                row.append((idx + 1, ext_info['ext']))
+                            else:
+                                row.append(None)
+                        grid.append(row)
+                    
+                    # Print grid
+                    for row in grid:
+                        line = ""
+                        for item in row:
+                            if item:
+                                num, ext = item
+                                line += f"{num:>3}. {ext:<{max_ext_len}}  "
+                            else:
+                                line += " " * (max_ext_len + 6)
+                        print(line.rstrip())
+                    
+                    print()
+                    print("  Press Enter to cancel")
+                    print()
+                    
+                    ext_choice = self.get_input(f"Choose [1-{total_items}] or Enter to cancel: ")
+                    if not ext_choice:
+                        break
+                    
+                    try:
+                        ext_idx = int(ext_choice) - 1
+                        if ext_idx < 0 or ext_idx >= total_items:
+                            raise ValueError
+                    except ValueError:
+                        print("Invalid choice.")
+                        self.get_input("Press Enter to continue...")
+                        continue
+                    
+                    ext_info = extensions[ext_idx]
+                    extension = ext_info['ext']
+                    special = ext_info['special']
+                    fixed_filename = ext_info['filename']
+                    
+                    # Determine filename
+                    if special and fixed_filename:
+                        filename = fixed_filename
+                        self.clear_screen()
+                        self.print_header(f"Create: {extension}")
+                        print(f"\n  📄 This file will be saved as: {filename}")
+                        print(f"     (filename is fixed for this file type)")
+                        print()
+                        self.get_input("  Press Enter to continue")
                     else:
-                        self.nav.replace_page(0)
+                        self.clear_screen()
+                        self.print_header(f"Create: {extension}")
+                        print(f"\n  Enter filename (without .{extension} extension):")
+                        print(f"  Example: my_script → my_script.{extension}")
+                        print()
+                        name_input = self.get_input("  Filename (Enter to cancel): ")
+                        if not name_input:
+                            continue
+                        name_input = name_input.strip().replace(' ', '_').replace('/', '_')
+                        if not name_input:
+                            print("  Invalid filename.")
+                            self.get_input("Press Enter to continue...")
+                            continue
+                        filename = f"{name_input}.{extension}"
+                    
+                    # Create the file
+                    success, result = create_file_from_ext(extension, filename)
+                    
+                    if success:
+                        print(f"\n  ✓ File '{filename}' created successfully")
+                        
+                        # Refresh navigation
+                        self.manager.load_all_notebooks(quiet=True)
+                        updated_notebook = self.manager.find_notebook_by_id(notebook.id)
+                        if updated_notebook:
+                            current = self.nav.current()
+                            if current and current['screen'] == 'notebook' and current['id'] == notebook.id:
+                                terminal_width, terminal_height = shutil.get_terminal_size()
+                                fresh_total = len(updated_notebook.notes)
+                                fixed_lines = 3 + 1 + 2 + 3
+                                if updated_notebook.subnotebooks:
+                                    fixed_lines += 2
+                                available = terminal_height - fixed_lines
+                                items_per_page = int(available * 0.9)
+                                items_per_page = max(1, items_per_page)
+                                total_pages = (fresh_total + items_per_page - 1) // items_per_page if fresh_total > 0 else 1
+                                if total_pages > 0:
+                                    self.nav.replace_page(total_pages - 1)
+                                else:
+                                    self.nav.replace_page(0)
+                        
+                        self._just_created = True
+                        self.get_input("\nPress Enter to continue...")
+                        return "navigate"
+                    else:
+                        print(f"\n  ✗ {result}")
+                        self.get_input("Press Enter to continue...")
+                        continue
+                
+                continue
+            
+            # ========== DIRECT FILENAME INPUT ==========
+            else:
+                filename = user_input
+                
+                # Parse extension from filename
+                if '.' in filename:
+                    parts = filename.rsplit('.', 1)
+                    name_part = parts[0]
+                    extension = parts[1].lower()
+                    
+                    # Validate: name part cannot be empty
+                    if not name_part:
+                        print("\n  ✗ Invalid: Filename must have a name before the extension")
+                        print("     Example: my_script.py")
+                        self.get_input("\nPress Enter to continue...")
+                        continue
+                    
+                    # Check if extension is supported
+                    if extension not in all_extensions:
+                        print(f"\n  ✗ Unsupported extension: .{extension}")
+                        print("     Use category menu to see supported extensions")
+                        self.get_input("\nPress Enter to continue...")
+                        continue
+                    
+                    # Create regular file
+                    success, result = create_file_from_ext(extension, filename)
+                    
+                    if success:
+                        print(f"\n  ✓ File '{filename}' created successfully")
+                        self.manager.load_all_notebooks(quiet=True)
+                        self._just_created = True
+                        self.get_input("\nPress Enter to continue...")
+                        return "navigate"
+                    else:
+                        print(f"\n  ✗ {result}")
+                        self.get_input("Press Enter to continue...")
+                        continue
+                
+                else:
+                    # No dot - check if it's a special file
+                    if filename in special_files:
+                        extension = filename
+                        fixed_filename = special_files[filename]
+                        
+                        # Create special file
+                        success, result = create_file_from_ext(extension, fixed_filename)
+                        
+                        if success:
+                            print(f"\n  ✓ File '{fixed_filename}' created successfully")
+                            self.manager.load_all_notebooks(quiet=True)
+                            self._just_created = True
+                            self.get_input("\nPress Enter to continue...")
+                            return "navigate"
+                        else:
+                            print(f"\n  ✗ {result}")
+                            self.get_input("Press Enter to continue...")
+                            continue
+                    else:
+                        print(f"\n  ✗ Invalid: '{filename}' is not a valid filename")
+                        print("     Regular files: name.extension (e.g., index.html)")
+                        print("     Special files: .bashrc or Dockerfile")
+                        self.get_input("\nPress Enter to continue...")
+                        continue
         
-            self._just_created = True
-            return "navigate"
+        return "continue"
     
     def get_initial_content_for_extension(self, extension):
         """Provide initial content hints based on file type"""
         hints = {
-            # Web Core
+            # Web Core (existing)
             "html": "<!DOCTYPE html>\n<html>\n<head>\n    <title>Document</title>\n</head>\n<body>\n    \n</body>\n</html>",
             "js": "// JavaScript file\n\n",
             "css": "/* CSS file */\n\n",
@@ -3982,8 +4277,11 @@ class TerminalNotes:
             "astro": "---\n// Astro component props/scripts\n---\n\n<div>\n  \n</div>\n\n<style>\n  \n</style>",
             "mdx": "# MDX Document\n\nimport Component from './component'\n\n<Component>\n  Content here\n</Component>\n\n## Section\n\nRegular markdown content...",
             "graphql": "# GraphQL Schema\n\ntype Query {\n  user(id: ID!): User\n}\n\ntype User {\n  id: ID!\n  name: String!\n  email: String!\n}",
-        
-            # Backend & Systems
+            # 🆕 NEW WEB EXTENSIONS
+            "wasm": ";; WebAssembly Text Format\n(module\n  (func (export \"add\") (param $a i32) (param $b i32) (result i32)\n    local.get $a\n    local.get $b\n    i32.add))\n",
+            "pug": "//- Pug template\ndoctype html\nhtml\n  head\n    title Document\n  body\n    block content\n",
+
+            # Backend & Systems (existing)
             "py": "# Python file\n\n",
             "php": "<?php\n\n",
             "rb": "# Ruby file\n\n",
@@ -3996,12 +4294,17 @@ class TerminalNotes:
             "lua": "-- Lua file\n\n",
             "r": "# R script\n\nlibrary(tidyverse)\n\ndata <- read.csv('file.csv')\nsummary(data)",
             "jl": "# Julia file\n\nusing DataFrames\n\nfunction main()\n    println(\"Hello, Julia!\")\nend",
-        
-            # Mobile & Platforms
+            # 🆕 NEW BACKEND EXTENSIONS
+            "zig": "// Zig file\n\nconst std = @import(\"std\");\n\npub fn main() !void {\n    std.debug.print(\"Hello, world!\\n\", .{});\n}\n",
+            "nim": "# Nim file\n\nimport std/strutils\n\necho \"Hello, world!\"\n",
+            "crystal": "# Crystal file\n\nputs \"Hello, world!\"\n",
+            "d": "// D file\n\nimport std.stdio;\n\nvoid main()\n{\n    writeln(\"Hello, world!\");\n}\n",
+
+            # Mobile & Platforms (existing)
             "swift": "// Swift file\n\n",
             "kt": "// Kotlin file\n\n",
-        
-            # DevOps & Automation
+
+            # DevOps & Automation (existing)
             "sh": "#!/bin/bash\n\n",
             "yml": "---\n# YAML file\n",
             "yaml": "---\n# YAML file\n",
@@ -4012,14 +4315,20 @@ class TerminalNotes:
             "tf": "# Terraform configuration\n\nprovider \"aws\" {\n  region = \"us-west-2\"\n}\n\nresource \"aws_s3_bucket\" \"example\" {\n  bucket = \"my-bucket-name\"\n  acl    = \"private\"\n}",
             "justfile": "# Just command runner\n\n# Available commands\nlist:\n    just --list\n\nbuild:\n    cargo build\n\nrun: build\n    ./target/debug/app\n\ntest:\n    cargo test\n\n# Variables\nversion := \"1.0.0\"\n\n# Default command\ndefault:\n    @just --list",
             "nix": "# Nix expression\n\n{ pkgs ? import <nixpkgs> {} }:\n\npkgs.stdenv.mkDerivation {\n  name = \"my-package\";\n  \n  src = ./.;\n  \n  buildInputs = with pkgs; [\n    gcc\n    make\n  ];\n  \n  installPhase = ''\n    mkdir -p $out/bin\n    cp my-program $out/bin/\n  '';\n}",
-        
-            # Data & APIs
+            # 🆕 NEW DEVOPS EXTENSIONS
+            "dockerignore": "# Docker ignore file\n\n# Dependencies\nnode_modules/\n__pycache__/\n*.pyc\n\n# Logs\n*.log\n\n# Environment\n.env\n.env.local\n",
+            "env": "# Environment variables\n\n# Database\nDB_HOST=localhost\nDB_PORT=5432\nDB_NAME=mydb\n\n# API\nAPI_KEY=your-api-key-here\nAPI_SECRET=your-secret-here\n",
+
+            # Data & APIs (existing)
             "json": "{\n  \n}",
             "xml": "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n\n",
             "sql": "-- SQL file\n\n",
             "proto": "syntax = \"proto3\";\n\npackage example;\n\nservice UserService {\n  rpc GetUser (GetUserRequest) returns (User) {}\n}\n\nmessage User {\n  string id = 1;\n  string name = 2;\n  string email = 3;\n}\n\nmessage GetUserRequest {\n  string id = 1;\n}",
+            # 🆕 NEW DATA EXTENSIONS
+            "hjson": "# HJSON (Human JSON)\n\n{\n  # Comments are allowed\n  name: \"example\"\n  count: 42\n  enabled: true\n  items: [\n    \"apple\"\n    \"banana\"\n  ]\n}\n",
+            "ron": "// RON (Rusty Object Notation)\n\n(\n    name: \"example\",\n    count: 42,\n    enabled: true,\n    items: [\"apple\", \"banana\"],\n)\n",
 
-            # Documentation
+            # Documentation (existing)
             "bib": "@article{,\n  \n}",
             "tex": "\\documentclass{article}\n\\begin{document}\n\n\n\\end{document}",
             "md": "# Markdown file\n\n",
@@ -4030,43 +4339,57 @@ class TerminalNotes:
             "adoc": "= AsciiDoc Document\nAuthor Name\n:doctype: article\n\n== Section 1\n\nContent here...\n\n* List item\n* Another item\n\n== Section 2\n\nMore content...",
             "rst": "===============\nDocument Title\n===============\n\n:Author: Your Name\n:Date: 2024-01-01\n\nSection 1\n=========\n\nContent here...\n\n- List item 1\n- List item 2\n\nSection 2\n=========\n\nMore content...",
             "typ": "#set page(width: auto, height: auto)\n#set text(font: \"Times New Roman\", size: 11pt)\n\n= Document Title\n\n== Section 1\n\nContent here...\n\n- List item 1\n- List item 2\n\n== Section 2\n\nMore content...\n\n```\nCode block\n```",
-        
-            # Shell Configs
+            # 🆕 NEW DOCUMENTATION EXTENSIONS
+            "wiki": "= Wiki Page =\n\n== Section 1 ==\nContent here...\n\n=== Subsection ===\nMore content...\n\n* Bullet point 1\n* Bullet point 2\n",
+
+            # Shell Configs (existing)
             "bashrc": "# ~/.bashrc\n\n# Aliases\nalias ll='ls -la'\nalias gs='git status'\n\n# PATH\nexport PATH=$PATH:$HOME/.local/bin\n\n# Prompt\nPS1='\\[\\e[32m\\]\\u@\\h\\[\\e[0m\\]:\\[\\e[34m\\]\\w\\[\\e[0m\\]\\$ '",
             "zshrc": "# ~/.zshrc\n\n# Oh My Zsh\nplugins=(git docker kubectl)\n\n# Aliases\nalias ll='ls -la'\n\n# Theme\nZSH_THEME=\"robbyrussell\"",
             "profile": "# ~/.profile\n\n# PATH\nexport PATH=\"$HOME/.local/bin:$PATH\"\n\n# Default editor\nexport EDITOR=vim",
             "aliases": "# Custom aliases\n\nalias ll='ls -la'\nalias la='ls -A'\nalias l='ls -CF'\n\n# Git aliases\nalias gs='git status'\nalias ga='git add'\nalias gc='git commit'",
             "bash_profile": "# ~/.bash_profile\n\n# Source .bashrc if it exists\nif [ -f ~/.bashrc ]; then\n    source ~/.bashrc\nfi\n\n# PATH\nexport PATH=\"$HOME/bin:$PATH\"",
             "zprofile": "# ~/.zprofile\n\n# Environment variables for Zsh login shells\n\nexport EDITOR=vim\nexport VISUAL=vim",
-        
-            # Editor Configs
+            # 🆕 NEW SHELL CONFIGS
+            "screenrc": "# ~/.screenrc\n\n# Startup message\nstartup_message off\n\n# Hardstatus\ndefhardstatus alwayslastline\nhardstatus string '%{= kG}%-w%{= kW}%n %t%{-}%+w %= %{= kW}%Y-%m-%d %c'\n\n# Key bindings\nbindkey -k k1 screen 1\nbindkey -k k2 screen 2\n",
+            "wgetrc": "# ~/.wgetrc\n\n# Set default timeout\ntimeout = 30\n\n# Don't check certificate\ncheck_certificate = off\n\n# Set user agent\nuser_agent = \"Mozilla/5.0\"\n",
+            "curlrc": "# ~/.curlrc\n\n# Default options\n--progress-bar\n--remote-time\n--retry 3\n--retry-delay 1\n--connect-timeout 30\n--max-time 300\n",
+            "fish": "# config.fish\n\n# Aliases\nalias ll='ls -la'\nalias gs='git status'\n\n# PATH\nset -gx PATH $HOME/.local/bin $PATH\n\n# Prompt\nfunction fish_prompt\n    echo -n (whoami)@(hostname) (pwd) '> '\nend\n",
+
+            # Editor Configs (existing)
             "vimrc": "\" ~/.vimrc\n\nset number\nset relativenumber\nset tabstop=4\nset shiftwidth=4\nset expandtab\nsyntax on\n\n\" Mappings\nnnoremap <C-s> :w<CR>\n\n\" Plugins (if using vim-plug)\ncall plug#begin()\n\" Plug 'preservim/nerdtree'\ncall plug#end()",
             "lua": "-- init.lua for Neovim\n\n-- Options\nvim.opt.number = true\nvim.opt.relativenumber = true\nvim.opt.tabstop = 4\nvim.opt.shiftwidth = 4\nvim.opt.expandtab = true\n\n-- Keymaps\nvim.keymap.set('n', '<C-s>', ':w<CR>')",
             "editorconfig": "# EditorConfig is awesome: https://EditorConfig.org\n\nroot = true\n\n[*]\nindent_style = space\nindent_size = 4\nend_of_line = lf\ncharset = utf-8\ntrim_trailing_whitespace = true\ninsert_final_newline = true\n\n[*.{js,py}]\nindent_size = 4",
-        
-            # Git Configs
+
+            # Git Configs (existing)
             "gitconfig": "[user]\n\tname = Your Name\n\temail = email@example.com\n\n[alias]\n\tco = checkout\n\tbr = branch\n\tci = commit\n\tst = status\n\n[core]\n\teditor = vim\n\n[color]\n\tui = auto",
             "gitignore": "# OS files\n.DS_Store\nThumbs.db\n*.swp\n*.swo\n*~\n\n# IDE\n.vscode/\n.idea/\n\n# Dependencies\nnode_modules/\n__pycache__/\n*.pyc\n\n# Environment\n.env\n.env.local\n\n# Build outputs\ndist/\nbuild/\n*.log",
             "gitattributes": "# Auto detect text files\n* text=auto\n\n# Source code\n*.js text eol=lf\n*.py text eol=lf\n*.md text eol=lf\n\n# Binaries\n*.png binary\n*.jpg binary\n*.gz binary",
-        
-            # Language/Runtime
+            # 🆕 NEW GIT CONFIGS
+            "gitmessage": "# Commit message template\n\n# <type>(<scope>): <subject>\n# Example: feat(api): add user authentication\n\n\n# Body (optional): detailed explanation\n\n\n# Footer (optional): issue references\n# Closes #123\n",
+            "mailmap": "# .mailmap file\n\n# Format: Proper Name <proper@email> <commit-name> <commit-email>\n# Example:\n# John Doe <john@example.com> <johndoe> <johndoe@old.com>\n",
+
+            # Language/Runtime (existing)
             "npmrc": "# npm config file\nregistry=https://registry.npmjs.org/\nsave-exact=true\ninit-author-name=Your Name\ninit-license=MIT",
             "yarnrc": "# Yarn config file\n# https://yarnpkg.com/configuration/yarnrc\n\nnpmRegistryServer: \"https://registry.npmjs.org\"\n\nyarnPath: .yarn/releases/yarn-berry.cjs",
             "gemrc": "---\n:verbose: true\n:update_sources: true\n:backtrace: false\n:bulk_threshold: 1000\ninstall: --no-rdoc --no-ri --env-shebang\nupdate: --no-rdoc --no-ri --env-shebang",
             "Rprofile": ".First <- function() {\n  cat(\"\\nWelcome to R!\\n\")\n  options(repos = c(CRAN = \"https://cloud.r-project.org\"))\n}\n\n.Last <- function() {\n  cat(\"\\nGoodbye!\\n\")\n}",
             "irbrc": "# ~/.irbrc\n\nrequire 'irb/completion'\n\nIRB.conf[:AUTO_INDENT] = true\nIRB.conf[:USE_READLINE] = true\nIRB.conf[:SAVE_HISTORY] = 1000\nIRB.conf[:HISTORY_FILE] = \"~/.irb_history\"\n\n# Prompt\nIRB.conf[:PROMPT][:CUSTOM] = {\n  :PROMPT_I => \"> \",\n  :PROMPT_S => \"%l> \",\n  :PROMPT_C => \"?> \",\n  :RETURN => \"=> %s\\n\"\n}\nIRB.conf[:PROMPT_MODE] = :CUSTOM",
-        
-            # Application Configs
+
+            # Application Configs (existing)
             "tmux.conf": "# ~/.tmux.conf\n\n# Use C-a as prefix\nset -g prefix C-a\nunbind C-b\nbind C-a send-prefix\n\n# Split panes\nbind | split-window -h\nbind - split-window -v\n\n# Reload config\nbind r source-file ~/.tmux.conf\n\n# Mouse mode\nset -g mouse on\n\n# Colors\nset -g default-terminal \"screen-256color\"",
             "inputrc": "# ~/.inputrc\n\n# Case-insensitive tab completion\nset completion-ignore-case on\n\n# Show all matches at once\nset show-all-if-ambiguous on\n\n# Vi mode\nset editing-mode vi\n\n# History\nset history-size 1000",
             "Xresources": "! ~/.Xresources\n\nXft.dpi: 96\nXft.antialias: true\nXft.hinting: true\nXft.hintstyle: hintslight\nXft.rgba: rgb\n\n! Urxvt settings\nURxvt*font: xft:Monospace:pixelsize=12\nURxvt*scrollBar: false\nURxvt*transparent: false",
-            "ssh/config": "# SSH Config\n\n# Defaults\nHost *\n    ServerAliveInterval 60\n    ServerAliveCountMax 3\n    ForwardAgent no\n\n# GitHub\nHost github.com\n    HostName github.com\n    User git\n    IdentityFile ~/.ssh/id_ed25519\n\n# Personal server\nHost myserver\n    HostName 192.168.1.100\n    User myuser\n    Port 22\n    IdentityFile ~/.ssh/id_rsa",
-        
-            # Container/CI
+
+            # Container/CI (existing)
             "Dockerfile": "# Dockerfile\nFROM ubuntu:22.04\n\nRUN apt-get update && apt-get install -y \\\n    python3 \\\n    python3-pip \\\n    && rm -rf /var/lib/apt/lists/*\n\nWORKDIR /app\n\nCOPY requirements.txt .\nRUN pip3 install -r requirements.txt\n\nCOPY . .\n\nCMD [\"python3\", \"app.py\"]",
             "Jenkinsfile": "pipeline {\n    agent any\n    \n    environment {\n        APP_NAME = 'my-app'\n    }\n    \n    stages {\n        stage('Checkout') {\n            steps {\n                checkout scm\n            }\n        }\n        stage('Build') {\n            steps {\n                echo \"Building ${APP_NAME}...\"\n                sh 'make build'\n            }\n        }\n        stage('Test') {\n            steps {\n                sh 'make test'\n            }\n        }\n        stage('Deploy') {\n            steps {\n                echo \"Deploying ${APP_NAME}...\"\n                sh 'make deploy'\n            }\n        }\n    }\n    \n    post {\n        always {\n            cleanWs()\n        }\n    }\n}",
             "service": "[Unit]\nDescription=My Custom Service\nAfter=network.target\n\n[Service]\nType=simple\nUser=myuser\nGroup=mygroup\nWorkingDirectory=/opt/myapp\nExecStart=/usr/bin/python3 /opt/myapp/main.py\nRestart=on-failure\nRestartSec=10\n\n[Install]\nWantedBy=multi-user.target",
-            "timer": "[Unit]\nDescription=Run my service daily\nRequires=myapp.service\n\n[Timer]\nOnCalendar=daily\nPersistent=true\n\n[Install]\nWantedBy=timers.target"
+            "timer": "[Unit]\nDescription=Run my service daily\nRequires=myapp.service\n\n[Timer]\nOnCalendar=daily\nPersistent=true\n\n[Install]\nWantedBy=timers.target",
+            # 🆕 NEW CI/CD EXTENSIONS
+            "gitlab-ci.yml": "# .gitlab-ci.yml\n\nstages:\n  - build\n  - test\n  - deploy\n\nvariables:\n  APP_NAME: myapp\n\nbefore_script:\n  - apt-get update -qq\n\nbuild:\n  stage: build\n  script:\n    - make build\n  artifacts:\n    paths:\n      - dist/\n\ntest:\n  stage: test\n  script:\n    - make test\n\ndeploy:\n  stage: deploy\n  script:\n    - make deploy\n  only:\n    - main\n",
+            "ps1": "# PowerShell script\n\nWrite-Host \"Hello, World!\"\n\n# Variables\n$name = \"World\"\nWrite-Host \"Hello, $name!\"\n\n# Function\nfunction Get-Greeting {\n    param([string]$Name)\n    return \"Hello, $Name!\"\n}\n\n# Condition\nif ($true) {\n    Write-Host \"Condition is true\"\n}\n\n# Loop\nforeach ($i in 1..5) {\n    Write-Host \"Number: $i\"\n}\n",
+            "bat": "@echo off\nREM Batch file\n\necho Hello, World!\n\nREM Variables\nset NAME=World\necho Hello, %NAME%!\n\nREM Condition\nif \"%NAME%\"==\"World\" (\n    echo Condition is true\n)\n\nREM Loop\nfor /l %%i in (1,1,5) do (\n    echo Number: %%i\n)\n",
+            "cmake": "# CMakeLists.txt\n\ncmake_minimum_required(VERSION 3.10)\nproject(MyProject)\n\n# Set C++ standard\nset(CMAKE_CXX_STANDARD 17)\nset(CMAKE_CXX_STANDARD_REQUIRED ON)\n\n# Add executable\nadd_executable(myapp main.cpp)\n\n# Find packages\nfind_package(OpenCV REQUIRED)\n\n# Link libraries\ntarget_link_libraries(myapp ${OpenCV_LIBS})\n\n# Set output directory\nset_target_properties(myapp PROPERTIES\n    RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/bin\n)\n",
         }
         return hints.get(extension, "")
 
