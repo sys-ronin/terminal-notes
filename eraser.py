@@ -784,7 +784,7 @@ class Eraser:
     def secure_erase_notebook(self, notebook):
         """
         Secure Erase - completely remove notebook and ALL its commits from history.
-        Requires password verification before proceeding.
+        Requires password verification for encrypted notebooks, name confirmation for unencrypted.
         """
         import shutil
         import subprocess
@@ -838,7 +838,7 @@ class Eraser:
                 self.ui.get_input("Press Enter to continue...")
             return False
 
-        # ========== PASSWORD VERIFICATION CONFIRMATION ==========
+        # ========== CONFIRMATION (Password for encrypted, Name for unencrypted) ==========
         if self.ui:
             self.ui.clear_screen()
             print(f"\n꘎ SECURELY ERASING ENTIRE NOTEBOOK: {notebook.name}")
@@ -847,42 +847,53 @@ class Eraser:
             print(f"  Repository: {folder_path}")
             print()
 
-            # Get crypto key
-            crypto = None
-            if hasattr(notebook, '_crypto') and notebook._crypto:
-                crypto = notebook._crypto
-            else:
-                crypto = self.manager.session_keys.get(notebook.id)
+            is_encrypted = notebook.id in self.manager.encrypted_notebooks
 
-            if not crypto:
-                print("  Cannot verify password - notebook not unlocked.")
-                self.ui.get_input("Press Enter to continue...")
-                return False
-
-            folder_name = os.path.basename(folder_path)
-            stored_pw_key = crypto.password_key
-
-            # Verify password (3 attempts)
-            max_attempts = 3
-            verified = False
-
-            for attempt in range(max_attempts):
-                remaining = max_attempts - attempt
-                password = getpass(f"  Enter notebook password to confirm erasure ({remaining} attempts): ")
-
-                derived_key = derive_key(password, folder_name)
-
-                if derived_key == stored_pw_key:
-                    verified = True
-                    break
+            if is_encrypted:
+                # Get crypto key
+                crypto = None
+                if hasattr(notebook, '_crypto') and notebook._crypto:
+                    crypto = notebook._crypto
                 else:
-                    print("  Wrong password.\n")
+                    crypto = self.manager.session_keys.get(notebook.id)
 
-            if not verified:
-                print("\n  ꘎ Password verification failed. Erasure cancelled.")
-                self.ui.get_input("Press Enter to continue...")
-                return False
-        # ========== END PASSWORD VERIFICATION ==========
+                if not crypto:
+                    print("  Cannot verify password - notebook not unlocked.")
+                    self.ui.get_input("Press Enter to continue...")
+                    return False
+
+                folder_name = os.path.basename(folder_path)
+                stored_pw_key = crypto.password_key
+
+                # Verify password (3 attempts)
+                max_attempts = 3
+                verified = False
+
+                for attempt in range(max_attempts):
+                    remaining = max_attempts - attempt
+                    password = getpass(f"  Enter notebook password to confirm erasure ({remaining} attempts): ")
+
+                    derived_key = derive_key(password, folder_name)
+
+                    if derived_key == stored_pw_key:
+                        verified = True
+                        break
+                    else:
+                        print("  Wrong password.\n")
+
+                if not verified:
+                    print("\n  ꘎ Password verification failed. Erasure cancelled.")
+                    self.ui.get_input("Press Enter to continue...")
+                    return False
+            else:
+                # Unencrypted notebook - just confirm with notebook name
+                print(f"  Type the notebook name '{notebook.name}' to confirm: ", end="")
+                confirm = input().strip()
+                if confirm != notebook.name:
+                    print("\n  ꘎ Confirmation failed. Erasure cancelled.")
+                    self.ui.get_input("Press Enter to continue...")
+                    return False
+        # ========== END CONFIRMATION ==========
 
         # Trusted device removal option
         remove_trusted = False
