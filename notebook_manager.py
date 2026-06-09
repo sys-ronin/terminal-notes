@@ -1122,7 +1122,7 @@ class NotebookManager:
             self.print_footer("  ".join(footer))
             
             cmd = self.get_input("> ").strip().lower()
-            
+
             # Pagination
             if cmd == "n" and current_page < total_pages:
                 self.accounts_page += 1
@@ -1130,11 +1130,12 @@ class NotebookManager:
             elif cmd == "p" and current_page > 1:
                 self.accounts_page -= 1
                 continue
-            
-            # View account
+
+            # View account (supports v, v1, v2, etc.)
             elif cmd.startswith("v"):
                 if not paginated:
                     continue
+                
                 if cmd == "v":
                     try:
                         rel_num = int(self.get_input("Enter account number: "))
@@ -1150,23 +1151,81 @@ class NotebookManager:
                     acc = paginated[rel_num - 1]
                     self.show_account_repos(acc)
                 continue
-            
-            # Remove account
-            elif cmd == "r" and paginated:
-                self._remove_account_from_list()
-                self.accounts_page = 0
-                continue
-            
+
+            # Remove account (supports r, r1, r2, etc.)
+            elif cmd.startswith("r"):
+                if not paginated:
+                    continue
+                
+                # Parse the number from command
+                if cmd == "r":
+                    # Just 'r' - prompt for number
+                    try:
+                        rel_num = int(self.get_input("Enter account number to remove: "))
+                    except ValueError:
+                        continue
+                else:
+                    # 'r1', 'r2', etc. - extract number
+                    try:
+                        rel_num = int(cmd[1:])
+                    except ValueError:
+                        continue
+                
+                if 1 <= rel_num <= len(paginated):
+                    acc = paginated[rel_num - 1]
+                    
+                    # Get actual notebook count for this account
+                    notebook_count = self._get_actual_notebook_count_for_account(acc)
+                    
+                    # Confirm removal
+                    self.clear_screen()
+                    self.print_header("Remove Account")
+                    print(f"\n  Account: {acc['username']}@{acc.get('host', 'github.com')}")
+                    
+                    if notebook_count > 0:
+                        if notebook_count == 1:
+                            print(f"  Linked notebooks: 1 notebook")
+                        else:
+                            print(f"  Linked notebooks: {notebook_count} notebooks")
+                        print()
+                        print(f"  ⚠ This account has {notebook_count} linked notebook(s)!")
+                        print("  Removing will unlink these notebooks.")
+                    
+                    print()
+                    confirm = self.get_input("  Remove this account? [y/N]: ").strip().lower()
+                    
+                    if confirm == 'y':
+                        from token_vault import TokenVault
+                        vault = TokenVault(self.app_dir)
+                        vault.remove_token(acc['id'])
+                        
+                        # Remove from in-memory accounts
+                        if acc['id'] in self.accounts["accounts"]:
+                            del self.accounts["accounts"][acc['id']]
+                            self.save_accounts()
+                        
+                        print(f"\n  ✓ Account '{acc['username']}@{acc.get('host', 'github.com')}' removed!")
+                        self.accounts_page = 0  # Reset to first page after removal
+                    else:
+                        print("\n  Cancelled.")
+                    
+                    self.get_input("\nPress Enter to continue...")
+                    continue
+                else:
+                    print(f"  Invalid account number. Use 1-{len(paginated)}")
+                    self.get_input("Press Enter to continue...")
+                    continue
+
             # Add account
             elif cmd == "a":
                 self.show_add_account()
                 self.accounts_page = 0
                 continue
-            
+
             # Back
             elif cmd == "b":
                 break
-            
+
             # Quit
             elif cmd == "q" or cmd == "qy":
                 if cmd == "qy":
@@ -1186,10 +1245,53 @@ class NotebookManager:
                         if confirm == "y":
                             self.clear_screen()
                             return "exit_app"
-            
+
             # Invalid command - just loop (no error message, like home screen)
             else:
                 continue
+    
+    def _get_actual_notebook_count_for_account(self, account):
+        """Get actual number of notebooks linked to this account on this machine"""
+        fp_hash = self.manager._compute_fp_hash()
+        registry = self.manager.load_registry(force_reload=True)
+        notebooks_data = registry.get("notebooks", {})
+        
+        count = 0
+        
+        for notebook_id, notebook_entry in notebooks_data.items():
+            if isinstance(notebook_entry, str):
+                continue
+            
+            systems = notebook_entry.get("systems", {})
+            system_entry = systems.get(fp_hash, {})
+            
+            if not system_entry:
+                continue
+            
+            notebook_path = system_entry.get("path", "")
+            if notebook_path and not os.path.isabs(notebook_path):
+                notebook_path = os.path.join(self.manager.notebooks_root, notebook_path)
+            
+            if not notebook_path or not os.path.exists(notebook_path):
+                continue
+            
+            git_config_path = os.path.join(notebook_path, ".git", "config")
+            if not os.path.exists(git_config_path):
+                continue
+            
+            remote_url = self._extract_remote_url_from_git_config(git_config_path)
+            if not remote_url:
+                continue
+            
+            parsed = self._parse_git_remote_url(remote_url)
+            if not parsed:
+                continue
+            
+            # Check if matches this account
+            if parsed['host'] == account.get('host') and parsed['username'] == account.get('username'):
+                count += 1
+        
+        return count
 
     def _extract_remote_url_from_git_config(self, config_path):
         """Extract the remote origin URL from .git/config"""
@@ -1550,6 +1652,110 @@ class NotebookManager:
                     continue
 
         return None
+    
+    def _remove_account_from_list(self):
+        """Remove account from the accounts list - shows actual notebook count from master registry"""
+        from token_vault import TokenVault
+        
+        accounts = list(self.accounts.get("accounts", {}).items())
+        if not accounts:
+            print("\n  No accounts to remove.")
+            self.get_input("\nPress Enter to continue...")
+            return
+        
+        # ========== Get current system fingerprint ==========
+        fp_hash = self.manager._compute_fp_hash()
+        registry = self.manager.load_registry(force_reload=True)
+        notebooks_data = registry.get("notebooks", {})
+        
+        # ========== Build actual notebook count per account by scanning Git remotes ==========
+        actual_counts = {}
+        for acc_id, acc in accounts:
+            actual_counts[acc_id] = 0
+        
+        for notebook_id, notebook_entry in notebooks_data.items():
+            if isinstance(notebook_entry, str):
+                continue
+            
+            systems = notebook_entry.get("systems", {})
+            system_entry = systems.get(fp_hash, {})
+            
+            if not system_entry:
+                continue
+            
+            notebook_path = system_entry.get("path", "")
+            if notebook_path and not os.path.isabs(notebook_path):
+                notebook_path = os.path.join(self.manager.notebooks_root, notebook_path)
+            
+            if not notebook_path or not os.path.exists(notebook_path):
+                continue
+            
+            git_config_path = os.path.join(notebook_path, ".git", "config")
+            if not os.path.exists(git_config_path):
+                continue
+            
+            remote_url = self._extract_remote_url_from_git_config(git_config_path)
+            if not remote_url:
+                continue
+            
+            parsed = self._parse_git_remote_url(remote_url)
+            if not parsed:
+                continue
+            
+            # Find matching account
+            for acc_id, acc in accounts:
+                if parsed['host'] == acc['host'] and parsed['username'] == acc['username']:
+                    actual_counts[acc_id] += 1
+                    break
+        
+        self.clear_screen()
+        self.print_header("Remove Account")
+        
+        for i, (acc_id, acc) in enumerate(accounts, 1):
+            notebook_count = actual_counts.get(acc_id, 0)
+            if notebook_count == 1:
+                count_text = "1 notebook"
+            else:
+                count_text = f"{notebook_count} notebooks"
+            print(f"[{i}] {acc['username']}@{acc.get('host', 'github.com')} ({count_text})")
+        
+        print()
+        choice = self.get_input("Enter number to remove (or Enter to cancel): ")
+        
+        if not choice:
+            return
+        
+        try:
+            idx = int(choice) - 1
+            if 0 <= idx < len(accounts):
+                acc_id, account = accounts[idx]
+                notebook_count = actual_counts.get(acc_id, 0)
+                
+                if notebook_count > 0:
+                    print(f"\n  ⚠ Account has {notebook_count} linked notebook(s)!")
+                    confirm = self.get_input("  Remove anyway? Linked notebooks will be unlinked. [y/N]: ").lower()
+                    if confirm != 'y':
+                        print("\n  Cancelled.")
+                        self.get_input("Press Enter to continue...")
+                        return
+                
+                # Remove from TokenVault
+                vault = TokenVault(self.app_dir)
+                vault.remove_token(acc_id)
+                
+                # Remove from in-memory accounts
+                del self.accounts["accounts"][acc_id]
+                self.save_accounts()
+                
+                print(f"\n  ✓ Account '{account['username']}@{account.get('host', 'github.com')}' removed!")
+            else:
+                print("\n  Invalid choice.")
+        except ValueError:
+            print("\n  Invalid input.")
+        except Exception as e:
+            print(f"\n  Error removing account: {e}")
+        
+        self.get_input("\nPress Enter to continue...")
                 
     def fetch_account_repos(self, account, token):
         """Fetch repositories with connection pooling and retries"""
