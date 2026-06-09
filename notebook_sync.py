@@ -10,7 +10,6 @@ DESIGN PRINCIPLES:
 5. Merge all winning commits, sort by timestamp, replay on orphan branch
 6. Replace original branch with linear history, force push
 7. No JSON parsing, no decryption conflicts, no merge commits
-8. Security commits (type: SECURITY:) are handled separately, never interfere with item sync
 
 PLATFORM SUPPORT:
 - Linux, macOS, Windows (cross-platform)
@@ -73,8 +72,8 @@ class NotebookSync:
         # Step 1
         print("  → Checking your connection")
         if not self._has_internet():
-            print("  No internet connection.")
-            print("  Press Enter to continue...")
+            self._log("  No internet connection.")
+            self._log("  Press Enter to continue...")
             input()
             return False
         print("  ✓ Connection confirmed")
@@ -84,21 +83,21 @@ class NotebookSync:
         git_config = notebook.get("git_config")
         account = notebook.get("account")
         if not git_config or not account:
-            print("  Not configured with a remote repository.")
-            print("  Press Enter to continue...")
+            self._log("  Not configured with a remote repository.")
+            self._log("  Press Enter to continue...")
             input()
             return False
         
         token = self._decrypt_token(account.get('token_enc', ''))
         if not token:
-            print("  Could not decrypt account token.")
-            print("  Press Enter to continue...")
+            self._log("  Could not decrypt account token.")
+            self._log("  Press Enter to continue...")
             input()
             return False
         
         if not self._check_token_valid(account, token):
-            print("  Account token is invalid or expired.")
-            print("  Press Enter to continue...")
+            self._log("  Account token is invalid or expired.")
+            self._log("  Press Enter to continue...")
             input()
             return False
         print("  ✓ Account verified")
@@ -112,8 +111,8 @@ class NotebookSync:
         # Continue with the rest of sync
         path = notebook.get('path')
         if not path or not os.path.exists(path):
-            print("  Notebook path not found.")
-            print("  Press Enter to continue...")
+            self._log("  Notebook path not found.")
+            self._log("  Press Enter to continue...")
             input()
             return False
 
@@ -138,120 +137,125 @@ class NotebookSync:
         repo_exists = self._repo_exists(account, repo_name, token)
         if not repo_exists:
             result = self._create_and_push(notebook, account, repo_name, token, path, git_config)
-            print("  Press Enter to continue...")
+            self._log("  Press Enter to continue...")
             input()
             return result
 
         # Fetch latest remote
-        print("  Fetching remote changes...", end="")
+        self._log("  Fetching remote changes...", end="")
         subprocess.run(["git", "fetch", "origin"], cwd=path)
-        print(" Done")
+        self._log(" Done")
         
         print()
         print("  ✓ Looking for updates - complete")
         print()
 
-        # Collect commits from both sides
+        # ========== STEP 2: COLLECT NORMAL COMMITS (existing code) ==========
         local_commits = self._get_commits_with_uuids(path, "HEAD")
         remote_commits = self._get_commits_with_uuids(path, "origin/master")
-
-        # ========== SEPARATE NORMAL COMMITS FROM SECURITY COMMITS ==========
-        local_normal = []
-        local_security = []
-        remote_normal = []
-        remote_security = []
-
-        for commit in local_commits:
-            msg = commit.get('message', '')
-            if 'type: SECURITY:' in msg or msg.strip().startswith('SECURITY:'):
-                local_security.append(commit)
-            else:
-                local_normal.append(commit)
-
-        for commit in remote_commits:
-            msg = commit.get('message', '')
-            if 'type: SECURITY:' in msg or msg.strip().startswith('SECURITY:'):
-                remote_security.append(commit)
-            else:
-                remote_normal.append(commit)
-
-        # ========== KEEP ALL SECURITY COMMITS ==========
-        all_security = local_security + remote_security
         
-        # Find newest for final vault update
-        newest_security = None
-        if all_security:
-            all_security_sorted = sorted(all_security, key=lambda c: c['timestamp'])
-            newest_security = all_security_sorted[-1]
-
-        # ========== RESOLVE NORMAL COMMITS ==========
-        local_hashes = {c['hash'] for c in local_normal}
-        remote_hashes = {c['hash'] for c in remote_normal}
-
+        # ========== STEP 3: COLLECT SECURITY COMMITS (NEW) ==========
+        local_security = self._get_security_commits(path, "HEAD")
+        remote_security = self._get_security_commits(path, "origin/master")
+        
+        # ========== MERGE ALL COMMITS FOR HASH COMPARISON (NEW) ==========
+        all_local = local_commits + local_security
+        all_remote = remote_commits + remote_security
+        
+        local_hashes = {c['hash'] for c in all_local}
+        remote_hashes = {c['hash'] for c in all_remote}
+        
         hashes_only_local = local_hashes - remote_hashes
         hashes_only_remote = remote_hashes - local_hashes
+        
+        # ========== DETECT SECURITY COMMITS IN THE DIFFERENCE (NEW) ==========
+        local_security_hashes = {c['hash'] for c in local_security}
+        remote_security_hashes = {c['hash'] for c in remote_security}
+        
+        has_security_local = bool(local_security_hashes & hashes_only_local)
+        has_security_remote = bool(remote_security_hashes & hashes_only_remote)
+        # ========== END NEW ==========
 
         result = True
         
         # Case 1: Already in sync
-        if len(hashes_only_local) == 0 and len(hashes_only_remote) == 0 and not all_security:
-            self.clear_screen()
-            print()
-            print("  Your notebook is up to date.")
-            print()
-            input("  Press Enter to continue...")
+        if len(hashes_only_local) == 0 and len(hashes_only_remote) == 0:
+            self._log("  Your notebook is already up to date.")
+            self._log("  Press Enter to continue...")
+            input()
             return True
 
-        # Case 2: Only local has new normal commits (and NO security commits)
-        if len(hashes_only_local) > 0 and len(hashes_only_remote) == 0 and not all_security:
+        # Case 2: Only local has new commits
+        if len(hashes_only_local) > 0 and len(hashes_only_remote) == 0:
             self.clear_screen()
-            print()
-            print(f"  You have {len(hashes_only_local)} new update(s) ready to share.")
-            print()
-            print("  What will happen:")
-            print("  • Your updates will be saved to the cloud")
-            print()
-            confirm = input("  Do you want to continue? [y/N]: ").strip().lower()
-            if confirm == 'y':
+            
+            # ========== ADD SECURITY COMMIT MESSAGE (NEW) ==========
+            if has_security_local:
+                print("  You have a password change ready to share.")
                 print()
-                print("  Saving your updates...", end=" ")
+                print("  What will happen:")
+                print("  • Your new password will be saved to the cloud")
+                print("  • Your notebook will stay unlocked on this machine")
+                print()
+            else:
+                desc = f"  Your local notebook has {len(hashes_only_local)} update(s) ready to share.\n\n  What will happen:\n  • Your changes will be saved to the cloud"
+            # ========== END NEW ==========
+            
+            if self._ask_confirmation(desc if not has_security_local else None):
                 result = self._simple_push(path, len(hashes_only_local))
-                if result:
-                    print("Done")
-                else:
-                    print("Failed")
             else:
                 result = False
 
-        # Case 3: Only remote has new normal commits (and NO security commits)
-        elif len(hashes_only_remote) > 0 and len(hashes_only_local) == 0 and not all_security:
+        # Case 3: Only remote has new commits
+        elif len(hashes_only_remote) > 0 and len(hashes_only_local) == 0:
             self.clear_screen()
-            print()
-            print(f"  The cloud has {len(hashes_only_remote)} new update(s) ready for you.")
-            print()
-            print("  What will happen:")
-            print("  • Your notebook will be updated with the latest content")
-            print()
-            confirm = input("  Do you want to continue? [y/N]: ").strip().lower()
-            if confirm == 'y':
+            
+            # ========== ADD SECURITY COMMIT MESSAGE (NEW) ==========
+            if has_security_remote:
+                print("  The cloud has a password change ready for you.")
                 print()
-                print("  Updating your notebook...", end=" ")
+                print("  What will happen:")
+                print("  • Your password will be updated")
+                print("  • Your notebook will be locked after sync")
+                print("  • Use your new password to unlock")
+                print()
+            else:
+                desc = f"  The cloud has {len(hashes_only_remote)} update(s) ready for you.\n\n  What will happen:\n  • Your notebook will be updated with the latest content"
+            # ========== END NEW ==========
+            
+            if self._ask_confirmation(desc if not has_security_remote else None):
                 result = self._simple_pull(path, len(hashes_only_remote))
-                if result:
-                    print("Done")
-                else:
-                    print("Failed")
+                # ========== IF SECURITY COMMIT WAS PULLED, UPDATE VAULT (NEW) ==========
+                if result and has_security_remote:
+                    # Get the newest security commit from remote
+                    remote_security_sorted = sorted(remote_security, key=lambda c: c['timestamp'])
+                    newest_security = remote_security_sorted[-1] if remote_security_sorted else None
+                    if newest_security:
+                        self._update_vault_for_security_commit(path, notebook, newest_security)
+                        notebook['locked'] = True
+                        print()
+                        print("  Your password has been updated from the cloud.")
+                        print("  Your notebook is now locked. Use your new password to unlock.")
+                # ========== END NEW ==========
             else:
                 result = False
 
-        # Case 4: Both sides have unique normal commits OR there are security commits
+        # Case 4: Both sides have unique commits - reconstruct
         else:
-            result = self._handle_diverged_history(path, notebook, account, local_normal, remote_normal, all_security, newest_security, remote_security)
+            # ========== PASS SECURITY COMMITS TO HANDLER (NEW) ==========
+            result = self._handle_diverged_history(
+                path, notebook, account, 
+                local_commits, remote_commits,
+                local_security, remote_security
+            )
+            # ========== END NEW ==========
         
         # ========== FORCE RELOAD NOTEBOOK DATA AFTER SYNC ==========
         if result:
+            # Refresh the notebook object with latest data
             fresh_notebook = self.manager.find_notebook_by_id(notebook.get('id'))
             if fresh_notebook:
+                # Update counts
                 total_notes = fresh_notebook.get_total_note_count()
                 total_files = fresh_notebook.get_file_note_count()
                 notebook['note_count'] = total_notes - total_files
@@ -259,259 +263,103 @@ class NotebookSync:
                 notebook['sub_count'] = fresh_notebook.get_total_subnotebook_count()
                 notebook['locked'] = fresh_notebook.locked
                 notebook['path'] = fresh_notebook.custom_path
+        # ========== END RELOAD ==========
         
-        print()
-        input("  Press Enter to continue...")
+        # Wait for user acknowledgment before returning
+        self._log("")
+        self._log("  Press Enter to continue...")
+        input()
         
         return result
 
-    def _handle_diverged_history(self, path, notebook, account, local_normal, remote_normal, all_security, newest_security=None, remote_security=None):
+    def _handle_diverged_history(self, path, notebook, account, local_commits, remote_commits,
+                                    local_security=None, remote_security=None):
         """Handle diverged histories with reconstruction (normal + security commits)"""
         
-        # Check for common ancestor
+        if local_security is None:
+            local_security = []
+        if remote_security is None:
+            remote_security = []
+        
+        # Check for common ancestor (filter-repo case)
         has_common = self._has_common_ancestor(path)
 
-        if not has_common and not all_security:
+        if not has_common:
             return self._handle_no_common_ancestor(path, notebook, account)
 
-        # Build and resolve UUID chains for normal commits only
-        local_chains = self._build_uuid_chains(local_normal)
-        remote_chains = self._build_uuid_chains(remote_normal)
+        # Build chains from NORMAL commits only (security commits excluded)
+        local_chains = self._build_uuid_chains(local_commits)
+        remote_chains = self._build_uuid_chains(remote_commits)
+        
+        # Resolve conflicts for normal commits only
         winning_normal = self._resolve_and_merge_chains(local_chains, remote_chains)
-
-        # ========== DEDUPLICATE SECURITY COMMITS by .tn_recovery content ==========
-        unique_security = []
-        seen_recovery_hashes = set()
         
-        for sec in all_security:
-            # Get the .tn_recovery blob hash from the commit
-            recovery_raw = self._get_raw_blob(path, sec['hash'], ".tn_recovery")
-            if recovery_raw:
-                import hashlib
-                recovery_hash = hashlib.sha256(recovery_raw).hexdigest()[:16]
-                if recovery_hash not in seen_recovery_hashes:
-                    seen_recovery_hashes.add(recovery_hash)
-                    unique_security.append(sec)
-            else:
-                # Keep commits without recovery file (shouldn't happen, but safe)
-                unique_security.append(sec)
+        # ========== HANDLE SECURITY COMMITS SEPARATELY ==========
+        # ALL security commits from both sides, keep ALL of them
+        all_security = local_security + remote_security
+        all_security.sort(key=lambda c: c['timestamp'])
         
-        all_security = unique_security
+        # Determine if remote has a newer security commit than local
+        remote_has_newer = False
         
-        # Find newest after deduplication
-        if all_security:
-            all_security_sorted = sorted(all_security, key=lambda c: c['timestamp'])
-            newest_security = all_security_sorted[-1]
-        # ========== END DEDUPLICATION ==========
-
-        # Merge ALL security commits (not just newest)
+        if remote_security and local_security:
+            remote_newest = sorted(remote_security, key=lambda c: c['timestamp'])[-1]
+            local_newest = sorted(local_security, key=lambda c: c['timestamp'])[-1]
+            if remote_newest['timestamp'] > local_newest['timestamp']:
+                remote_has_newer = True
+        elif remote_security and not local_security:
+            remote_has_newer = True
+        
+        # Combine: winning normal commits + ALL security commits
         winning_commits = winning_normal + all_security
-
+        winning_commits.sort(key=lambda c: c['timestamp'])
+        
         if not winning_commits:
+            self._log("  No commits to replay.")
             return True
 
-        # Sort by timestamp
-        winning_commits.sort(key=lambda c: c['timestamp'])
-
-        # Calculate ACTUAL new counts (commits that are ONLY on one side)
-        local_hashes = {c['hash'] for c in local_normal}
-        remote_hashes = {c['hash'] for c in remote_normal}
-        
-        new_local_count = len(local_hashes - remote_hashes)
-        new_remote_count = len(remote_hashes - local_hashes)
-        
-        has_security = len(all_security) > 0
-        has_normal_changes = (new_local_count > 0 or new_remote_count > 0)
-
-        # Show user-friendly confirmation
-        self.clear_screen()
-        print()
-        
-        if has_security:
-            if has_normal_changes:
-                print("  You have new updates AND a password change.")
-            else:
-                print("  The cloud has a newer password for this notebook.")
-        else:
-            if new_local_count > 0 and new_remote_count > 0:
-                print("  Your notebook and the cloud both have new updates.")
-            elif new_local_count > 0:
-                print(f"  You have {new_local_count} new update(s) ready to share.")
-            elif new_remote_count > 0:
-                print(f"  The cloud has {new_remote_count} new update(s) ready for you.")
-        
-        print()
-        print("  What will happen:")
-        
-        if has_security:
-            print("  • Your password will be updated")
-            if has_normal_changes:
-                print("  • Your updates will also be saved")
-        else:
-            if new_local_count > 0 and new_remote_count > 0:
-                print("  • All updates from both sides will be combined")
-            elif new_local_count > 0:
-                print("  • Your updates will be saved to the cloud")
-            elif new_remote_count > 0:
-                print("  • Your notebook will be updated with the latest content")
-        
-        print()
-        confirm = input("  Do you want to continue? [y/N]: ").strip().lower()
-        
-        if confirm != 'y':
-            print()
-            print("  Sync cancelled.")
-            print()
-            input("  Press Enter to continue...")
+        # Show description and confirm
+        description = self._build_reconstruction_description(local_chains, remote_chains, winning_commits)
+        if not self._ask_confirmation(description):
+            self._log("  Sync cancelled.")
             return False
 
-        # Reconstruct linear history
-        print()
-        print("  Combining updates...", end=" ")
-        success = self._reconstruct_linear_history(path, local_normal, remote_normal, winning_commits, all_security)
+        # Reconstruct linear history (pass security commits)
+        success = self._reconstruct_linear_history(
+            path, local_commits, remote_commits, winning_commits,
+            has_security=len(all_security) > 0, all_security=all_security
+        )
         
         if success:
-            print("Done")
-            
-            # ONLY update vault if there's a security commit from REMOTE
-            if has_security and newest_security:
-                # Check if this security commit came from remote (not local)
-                is_remote_security = False
-                if remote_security:
-                    is_remote_security = any(
-                        sec.get('hash') == newest_security.get('hash') 
-                        for sec in remote_security
-                    )
+            # ========== POST-RECONSTRUCTION VAULT UPDATE ==========
+            if all_security:
+                all_security_sorted = sorted(all_security, key=lambda c: c['timestamp'])
+                newest_security = all_security_sorted[-1]
                 
-                if is_remote_security:
+                if remote_has_newer:
+                    self._update_vault_for_security_commit(path, notebook, newest_security)
+                    notebook['locked'] = True
                     print()
                     print("  Your password has been updated from the cloud.")
                     print("  Your notebook is now locked. Use your new password to unlock.")
-                    self._update_vault_for_security_commit(path, notebook)
                 else:
-                    # Local password change - no lock needed
-                    if has_normal_changes:
+                    # Count how many normal changes were also synced
+                    normal_changes_count = len(winning_normal)
+                    if normal_changes_count > 0 and local_security:
                         print()
                         print("  Your password change and updates have been saved to the cloud.")
-                    else:
+                    elif local_security:
                         print()
                         print("  Your password change has been saved to the cloud.")
             
             self._update_last_push(notebook, account)
+            self._log("")
+            self._log("  Sync complete! Linear history reconstructed.")
         else:
-            print("Failed")
-            print()
-            print("  Sync failed!")
+            self._log("")
+            self._log("  Sync failed!")
 
         return success
-
-    def _update_vault_for_security_commit(self, repo_path: str, notebook):
-        """Update vault with new password from security commit and lock notebook"""
-        import json
-        import time
-        
-        notebook_id = notebook.get('id')
-        
-        # Step 1: Check TN files
-        marker_files = ['.tn_test', '.tn_recovery', '.tn_password']
-        
-        for marker in marker_files:
-            marker_path = os.path.join(repo_path, marker)
-            if not os.path.exists(marker_path):
-                return
-        
-        # Step 2: Read .tn_recovery
-        tn_recovery_path = os.path.join(repo_path, ".tn_recovery")
-        with open(tn_recovery_path, 'rb') as f:
-            recovery_raw = f.read()
-        
-        # Step 3: Get crypto
-        crypto = self._get_crypto_for_path(repo_path)
-        if crypto is None:
-            return
-        
-        # Step 4: Decrypt .tn_recovery
-        from notebook_operations import read_bytes
-        recovery_info = read_bytes(recovery_raw, crypto)
-        
-        if not recovery_info:
-            return
-        
-        # Step 5: Extract new password key
-        new_password_key_hex = recovery_info.get("password_key", "")
-        if not new_password_key_hex:
-            return
-        
-        new_password_key = bytes.fromhex(new_password_key_hex)
-        
-        # Step 6: Get system entry from registry
-        fp_hash = self.manager._compute_fp_hash()
-        registry = self.manager.load_registry(force_reload=True)
-        notebook_data = registry.get("notebooks", {}).get(notebook_id, {})
-        system_entry = notebook_data.get("systems", {}).get(fp_hash, {})
-        
-        entry_uuid = system_entry.get("entry")
-        vault_name = system_entry.get("vault", "default")
-        current_path = system_entry.get("path")
-        
-        if not entry_uuid:
-            return
-        
-        # Step 7: Get vault path
-        vault_path = self.manager.vault_manager.get_vault_path(vault_name)
-        if not os.path.exists(vault_path):
-            return
-        
-        # Step 8: Create new encrypted keys
-        fingerprint = self.manager._get_system_fingerprint()
-        combined_keys = new_password_key + crypto.phrase_key
-        nonce = os.urandom(12)
-        
-        from cryptography.hazmat.primitives.ciphers.aead import AESGCM
-        aesgcm = AESGCM(fingerprint)
-        encrypted_keys = aesgcm.encrypt(nonce, combined_keys, None)
-        
-        # Step 9: Write to vault (REPLACING entry)
-        self.manager.vault_manager.add_entry_to_vault(vault_path, entry_uuid, {
-            "notebook_id": notebook_id,
-            "timestamp": time.time_ns(),
-            "nonce": nonce.hex(),
-            "encrypted_keys": encrypted_keys.hex()
-        })
-        
-        # Step 10: Update master registry - SET LOCKED = TRUE
-        self.manager._update_system_entry(notebook_id, {
-            "path": current_path,
-            "vault": vault_name,
-            "entry": entry_uuid,
-            "locked": True
-        })
-        
-        # Step 11: Clear session cache
-        if hasattr(self.manager, 'session_keys'):
-            if notebook_id in self.manager.session_keys._cache:
-                del self.manager.session_keys._cache[notebook_id]
-        
-        notebook['locked'] = True
-    
-    def _create_valid_root_structure(self, repo_path: str) -> Dict:
-        """Create a valid root notebook structure from repo path"""
-        folder_name = os.path.basename(repo_path)
-        if '-' in folder_name:
-            notebook_name = folder_name.split('-')[0]
-            notebook_id = folder_name.split('-')[-1]
-        else:
-            notebook_name = folder_name
-            notebook_id = folder_name
-        
-        return {
-            "id": notebook_id,
-            "name": notebook_name,
-            "parent_id": None,
-            "notes": [],
-            "files": [],
-            "subnotebooks": []
-        }
 
     def _handle_no_common_ancestor(self, path, notebook, account):
         """Handle case where local and remote have no common ancestor"""
@@ -522,6 +370,7 @@ class NotebookSync:
         local_commit_count = self._get_branch_commit_count(path, "HEAD")
         remote_commit_count = self._get_branch_commit_count(path, "origin/master")
 
+        # Case 1: Remote has newer changes (by timestamp)
         if remote_last_ts > local_last_ts:
             return self._show_sync_decision(
                 path, notebook, account,
@@ -530,6 +379,7 @@ class NotebookSync:
                 primary="Your notebook will be updated with the latest changes",
                 secondary="Your local changes will be replaced"
             )
+        # Case 2: Local has newer changes (by timestamp)
         elif local_last_ts > remote_last_ts:
             return self._show_sync_decision(
                 path, notebook, account,
@@ -538,8 +388,10 @@ class NotebookSync:
                 primary="Your changes will become the main version",
                 secondary="The online version will be updated to match you"
             )
+        # Case 3: Timestamps are equal - compare commit counts to determine which has "more"
         else:
             if remote_commit_count > local_commit_count:
+                # Remote has more commits (not necessarily "newer", just more)
                 return self._show_sync_decision(
                     path, notebook, account,
                     title="Update Available",
@@ -548,6 +400,7 @@ class NotebookSync:
                     secondary="Your existing changes will stay as they are"
                 )
             elif local_commit_count > remote_commit_count:
+                # Local has more commits
                 return self._show_sync_decision(
                     path, notebook, account,
                     title="Share Your Changes",
@@ -556,6 +409,7 @@ class NotebookSync:
                     secondary="The online version will be updated to match you"
                 )
             else:
+                # Equal commit counts but different content - BOTH SIDES HAVE UNIQUE CHANGES
                 return self._show_sync_decision(
                     path, notebook, account,
                     title="Sync Your Notebook",
@@ -589,6 +443,7 @@ class NotebookSync:
             else:
                 result = self._sync_to_remote(path, notebook, account)
             
+            # Show final result without any intermediate output
             self.clear_screen()
             if result:
                 print(f"{title}")
@@ -717,7 +572,10 @@ class NotebookSync:
     # Commit Collection and UUID Extraction
     # ------------------------------------------------------------------------
     def _get_commits_with_uuids(self, repo_path: str, ref: str) -> List[Dict]:
+        """Get normal commits (NOT security commits)"""
         commits = []
+        cmd = ["git", "rev-list", "--no-merges", "--grep", "--not", "--grep", "SECURITY:", ref]
+        # OR simpler: get all commits, filter later
         cmd = ["git", "rev-list", "--no-merges", ref]
         result = subprocess.run(cmd, cwd=repo_path, capture_output=True, text=True)
         if result.returncode != 0 or not result.stdout:
@@ -734,6 +592,10 @@ class NotebookSync:
                 continue
             author_name, author_email, ts_str, message = parts
             timestamp = int(ts_str)
+
+            # SKIP security commits in normal collection
+            if "SECURITY:" in message:
+                continue
 
             uuid = self._extract_uuid_from_message(message)
             if not uuid:
@@ -754,6 +616,7 @@ class NotebookSync:
         commits.sort(key=lambda c: c['timestamp'])
         return commits
 
+
     def _extract_uuid_from_message(self, message: str) -> Optional[str]:
         patterns = [
             r'uuid:([a-f0-9-]+)',
@@ -770,8 +633,12 @@ class NotebookSync:
     # Per-UUID Chain Building and Conflict Resolution
     # ------------------------------------------------------------------------
     def _build_uuid_chains(self, commits: List[Dict]) -> Dict[str, List[Dict]]:
+        """Build UUID chains - EXCLUDES security commits (they are handled separately)"""
         chains = defaultdict(list)
         for c in commits:
+            # Skip security commits - they don't belong to any UUID chain
+            if c.get('uuid') == 'SECURITY' or c.get('is_security'):
+                continue
             chains[c['uuid']].append(c)
         return dict(chains)
 
@@ -799,11 +666,11 @@ class NotebookSync:
         return winning
 
     # ------------------------------------------------------------------------
-    # Linear History Reconstruction (with Security Commit Support)
+    # Linear History Reconstruction
     # ------------------------------------------------------------------------
     def _reconstruct_linear_history(self, repo_path: str, local_commits: List[Dict],
-                                    remote_commits: List[Dict], winning_commits: List[Dict],
-                                    winning_security: List[Dict] = None) -> bool:
+                                        remote_commits: List[Dict], winning_commits: List[Dict],
+                                        has_security: bool = False, all_security: List[Dict] = None) -> bool:
         """Reconstruct linear history with full subnotebook hierarchy and security commit support"""
         
         self._log("  Reconstructing linear history from all commits...")
@@ -816,29 +683,51 @@ class NotebookSync:
 
         from notebook_operations import read_bytes
 
-        # ========== ONLY BACKUP TN FILES IF NO SECURITY COMMIT WILL BE APPLIED ==========
-        has_security = winning_security and len(winning_security) > 0
-        marker_files = ['.tn_test', '.tn_recovery', '.tn_password']
+        # Backup TN files (only if no security commit will be applied)
         marker_backups = {}
-        
         if not has_security:
+            marker_files = ['.tn_test', '.tn_recovery', '.tn_password']
             for marker in marker_files:
                 marker_path = os.path.join(repo_path, marker)
                 if os.path.exists(marker_path):
                     with open(marker_path, 'rb') as f:
                         marker_backups[marker] = f.read()
-        else:
-            self._log("  Security commit detected - TN files will come from the security commit")
 
-        # Collect and sort all commits
-        all_commits = local_commits + remote_commits
-        seen_hashes = set()
-        unique_commits = []
-        for commit in all_commits:
-            if commit['hash'] not in seen_hashes:
-                seen_hashes.add(commit['hash'])
-                unique_commits.append(commit)
-        unique_commits.sort(key=lambda c: c['timestamp'])
+        # Get notebook ID and name from repo path
+        folder_name = os.path.basename(repo_path)
+        if '-' in folder_name:
+            notebook_name = folder_name.split('-')[0]
+            notebook_id = folder_name.split('-')[-1]
+        else:
+            notebook_name = folder_name
+            notebook_id = folder_name
+
+        # Save current branch
+        current_branch = self._get_current_branch(repo_path)
+
+        # Create orphan branch
+        temp_branch = "temp-linear-reconstruction"
+        subprocess.run(["git", "checkout", "--orphan", temp_branch], cwd=repo_path, capture_output=True)
+        subprocess.run(["git", "rm", "-rf", "."], cwd=repo_path, capture_output=True)
+
+        # Restore marker files from backup (only if no security commit)
+        if not has_security and marker_backups:
+            for marker, content in marker_backups.items():
+                with open(os.path.join(repo_path, marker), 'wb') as f:
+                    f.write(content)
+                subprocess.run(["git", "add", marker], cwd=repo_path, capture_output=True)
+
+        # Initialize state
+        current_notes = {}
+        current_files = {}
+        current_struct = {
+            "id": notebook_id,
+            "name": notebook_name,
+            "parent_id": None,
+            "notes": [],
+            "files": [],
+            "subnotebooks": []
+        }
 
         # Get common ancestor
         common_hash = None
@@ -850,36 +739,7 @@ class NotebookSync:
         except:
             pass
 
-        # Save current branch
-        current_branch = self._get_current_branch(repo_path)
-
-        # Create orphan branch
-        temp_branch = "temp-linear-reconstruction"
-        subprocess.run(["git", "checkout", "--orphan", temp_branch], cwd=repo_path, capture_output=True)
-        subprocess.run(["git", "rm", "-rf", "."], cwd=repo_path, capture_output=True)
-
-        # Get notebook ID and name from repo path for valid root structure
-        folder_name = os.path.basename(repo_path)
-        if '-' in folder_name:
-            notebook_name = folder_name.split('-')[0]
-            notebook_id = folder_name.split('-')[-1]
-        else:
-            notebook_name = folder_name
-            notebook_id = folder_name
-
-        # Initialize state from common ancestor
-        current_notes = {}
-        current_files = {}
-        # Create valid root notebook structure
-        current_struct = {
-            "id": notebook_id,
-            "name": notebook_name,
-            "parent_id": None,
-            "notes": [],
-            "files": [],
-            "subnotebooks": []
-        }
-
+        # Apply common ancestor state if exists
         if common_hash:
             common_notes_raw = self._get_raw_blob(repo_path, common_hash, "notes.json")
             common_files_raw = self._get_raw_blob(repo_path, common_hash, "files.json")
@@ -922,7 +782,7 @@ class NotebookSync:
             subprocess.run(["git", "add", "notes.json", "files.json", "structure.json"], cwd=repo_path, capture_output=True)
             subprocess.run(["git", "commit", "-m", "Initial state"], cwd=repo_path, capture_output=True)
 
-        # ========== Track subnotebook content recursively ==========
+        # Track subnotebook content recursively
         def collect_all_note_ids_from_subnotebooks(struct, target_set):
             for sub in struct.get('subnotebooks', []):
                 for note in sub.get('notes', []):
@@ -936,7 +796,6 @@ class NotebookSync:
         def merge_subnotebooks_recursively(target_struct, source_struct):
             target_subs = {sub.get('id'): sub for sub in target_struct.get('subnotebooks', [])}
             source_subs = {sub.get('id'): sub for sub in source_struct.get('subnotebooks', [])}
-            
             for sub_id, source_sub in source_subs.items():
                 if sub_id not in target_subs:
                     target_struct.setdefault('subnotebooks', []).append(source_sub.copy())
@@ -944,15 +803,13 @@ class NotebookSync:
                     target_sub = target_subs[sub_id]
                     merge_subnotebooks_recursively(target_sub, source_sub)
 
-        # Replay commits in order
+        # Replay commits in timestamp order
         for commit in winning_commits:
-            if common_hash and commit['hash'] == common_hash:
-                continue
-
+            is_security = commit.get('is_security', False) or commit.get('uuid') == 'SECURITY'
             changed = False
 
-            # Apply notes changes
-            if commit.get('notes_raw'):
+            # Handle NORMAL commits
+            if not is_security and commit.get('notes_raw'):
                 notes_data = read_bytes(commit['notes_raw'], crypto)
                 if notes_data:
                     for uuid, content in notes_data.items():
@@ -963,8 +820,7 @@ class NotebookSync:
                             current_notes[uuid] = content
                             changed = True
 
-            # Apply files changes
-            if commit.get('files_raw'):
+            if not is_security and commit.get('files_raw'):
                 files_data = read_bytes(commit['files_raw'], crypto)
                 if files_data:
                     for uuid, content in files_data.items():
@@ -972,8 +828,7 @@ class NotebookSync:
                             current_files[uuid] = content
                             changed = True
 
-            # Apply structure changes
-            if commit.get('struct_raw'):
+            if not is_security and commit.get('struct_raw'):
                 struct_data = read_bytes(commit['struct_raw'], crypto)
                 if struct_data:
                     for note in struct_data.get('notes', []):
@@ -998,46 +853,52 @@ class NotebookSync:
                     merge_subnotebooks_recursively(current_struct, struct_data)
                     changed = True
 
-            # Write TN files if this is a security commit
-            msg = commit.get('message', '')
-            is_security = 'type: SECURITY:' in msg or msg.strip().startswith('SECURITY:')
-
+            # Handle SECURITY commits
             if is_security:
-                for marker in marker_files:
-                    marker_raw = self._get_raw_blob(repo_path, commit['hash'], marker)
-                    if marker_raw:
-                        self._write_raw_file(repo_path, marker, marker_raw)
-                        changed = True
+                if commit.get('tn_recovery_raw'):
+                    self._write_raw_file(repo_path, ".tn_recovery", commit['tn_recovery_raw'])
+                    changed = True
+                if commit.get('tn_password_raw'):
+                    self._write_raw_file(repo_path, ".tn_password", commit['tn_password_raw'])
+                    changed = True
+                if commit.get('tn_test_raw'):
+                    self._write_raw_file(repo_path, ".tn_test", commit['tn_test_raw'])
+                    changed = True
 
             if changed:
-                # Ensure all notes in structure
-                all_note_ids_in_struct = set()
-                for note in current_struct.get('notes', []):
-                    if note.get('id'):
-                        all_note_ids_in_struct.add(note['id'])
-                collect_all_note_ids_from_subnotebooks(current_struct, all_note_ids_in_struct)
-                
-                for uuid in current_notes.keys():
-                    if uuid not in all_note_ids_in_struct:
-                        current_struct['notes'].append({
-                            'id': uuid,
-                            'title': 'Untitled',
-                            'created': datetime.fromtimestamp(commit['timestamp']).isoformat(),
-                            'updated': datetime.fromtimestamp(commit['timestamp']).isoformat()
-                        })
+                # Ensure all notes are in structure (for normal commits)
+                if not is_security:
+                    all_note_ids_in_struct = set()
+                    for note in current_struct.get('notes', []):
+                        if note.get('id'):
+                            all_note_ids_in_struct.add(note['id'])
+                    collect_all_note_ids_from_subnotebooks(current_struct, all_note_ids_in_struct)
+                    
+                    for uuid in current_notes.keys():
+                        if uuid not in all_note_ids_in_struct:
+                            current_struct['notes'].append({
+                                'id': uuid,
+                                'title': 'Untitled',
+                                'created': datetime.fromtimestamp(commit['timestamp']).isoformat(),
+                                'updated': datetime.fromtimestamp(commit['timestamp']).isoformat()
+                            })
 
-                self._write_json_encrypted(repo_path, "notes.json", current_notes, crypto)
-                self._write_json_encrypted(repo_path, "files.json", current_files, crypto)
-                self._write_json_encrypted(repo_path, "structure.json", current_struct, crypto)
+                # Write JSON files (for normal commits)
+                if not is_security:
+                    self._write_json_encrypted(repo_path, "notes.json", current_notes, crypto)
+                    self._write_json_encrypted(repo_path, "files.json", current_files, crypto)
+                    self._write_json_encrypted(repo_path, "structure.json", current_struct, crypto)
 
+                # Stage all files
                 subprocess.run(["git", "add", "notes.json", "files.json", "structure.json"], cwd=repo_path, capture_output=True)
                 
                 # Stage any TN files that exist
-                for marker in marker_files:
+                for marker in ['.tn_test', '.tn_recovery', '.tn_password']:
                     marker_path = os.path.join(repo_path, marker)
                     if os.path.exists(marker_path):
                         subprocess.run(["git", "add", marker], cwd=repo_path, capture_output=True)
 
+                # Commit with original metadata
                 env = os.environ.copy()
                 env['GIT_AUTHOR_NAME'] = commit['author_name']
                 env['GIT_AUTHOR_EMAIL'] = commit['author_email']
@@ -1046,16 +907,6 @@ class NotebookSync:
                 env['GIT_COMMITTER_EMAIL'] = commit['author_email']
                 env['GIT_COMMITTER_DATE'] = f"@{commit['timestamp']}"
                 subprocess.run(["git", "commit", "-m", commit['message']], cwd=repo_path, env=env, capture_output=True)
-
-        # ========== RESTORE TN FILES FROM BACKUP ONLY IF NO SECURITY COMMIT ==========
-        if not has_security and marker_backups:
-            self._log("  Restoring TN files from backup...")
-            for marker, content in marker_backups.items():
-                marker_path = os.path.join(repo_path, marker)
-                with open(marker_path, 'wb') as f:
-                    f.write(content)
-                subprocess.run(["git", "add", marker], cwd=repo_path, capture_output=True)
-            subprocess.run(["git", "commit", "-m", "Restore TN files after sync", "--allow-empty"], cwd=repo_path, capture_output=True)
 
         # Replace branch and force push
         subprocess.run(["git", "checkout", current_branch], cwd=repo_path, capture_output=True)
@@ -1071,9 +922,8 @@ class NotebookSync:
             self._log(" FAILED")
             self._log(f"  Push failed: {push_res.stderr[:200]}")
             return False
-        
         self._log(" OK")
-        
+
         return True
 
     def _get_crypto_for_path(self, repo_path: str):
@@ -1128,8 +978,6 @@ class NotebookSync:
             else:
                 conflicts.append(uuid)
 
-        has_security = any('type: SECURITY:' in c.get('message', '') for c in winning_commits)
-
         lines = [
             "  Status: Local and remote have diverged history.",
             ""
@@ -1140,8 +988,6 @@ class NotebookSync:
             lines.append(f"  • Commits only in remote: {len(remote_only)}")
         if conflicts:
             lines.append(f"  • Conflicting UUIDs (newer chain wins): {len(conflicts)}")
-        if has_security:
-            lines.append("  • Security changes (password updates) will be applied")
         lines.extend([
             "",
             "  What will happen:",
@@ -1250,7 +1096,154 @@ class NotebookSync:
             return f"https://bitbucket.org/{username}/{repo_name}.git"
         else:
             return f"https://{account.get('host', 'github.com')}/{username}/{repo_name}.git"
+    
+    # ------------------------------------------------------------------------
+    # Security Commits management
+    # ------------------------------------------------------------------------
 
+    def _get_security_commits(self, repo_path: str, ref: str) -> List[Dict]:
+        """Get security commits (password changes) from a ref"""
+        commits = []
+        
+        # Get all commits with SECURITY: in message
+        cmd = ["git", "rev-list", "--no-merges", "--grep", "SECURITY:", ref]
+        result = subprocess.run(cmd, cwd=repo_path, capture_output=True, text=True)
+        
+        if result.returncode != 0 or not result.stdout:
+            return commits
+        
+        for commit_hash in result.stdout.strip().split('\n'):
+            if not commit_hash:
+                continue
+            
+            # Get metadata
+            fmt_cmd = ["git", "log", "-1", "--format=%an|%ae|%ct|%B", commit_hash]
+            fmt_res = subprocess.run(fmt_cmd, cwd=repo_path, capture_output=True, text=True)
+            if fmt_res.returncode != 0:
+                continue
+            
+            parts = fmt_res.stdout.strip().split('|', 3)
+            if len(parts) < 4:
+                continue
+            
+            author_name, author_email, ts_str, message = parts
+            timestamp = int(ts_str)
+            
+            # Get TN file blobs
+            tn_test_raw = self._get_raw_blob(repo_path, commit_hash, ".tn_test")
+            tn_recovery_raw = self._get_raw_blob(repo_path, commit_hash, ".tn_recovery")
+            tn_password_raw = self._get_raw_blob(repo_path, commit_hash, ".tn_password")
+            
+            commits.append({
+                'hash': commit_hash,
+                'uuid': 'SECURITY',
+                'timestamp': timestamp,
+                'author_name': author_name,
+                'author_email': author_email,
+                'message': message,
+                'tn_test_raw': tn_test_raw,
+                'tn_recovery_raw': tn_recovery_raw,
+                'tn_password_raw': tn_password_raw,
+                'is_security': True
+            })
+        
+        commits.sort(key=lambda c: c['timestamp'])
+        return commits
+
+    
+    def _update_vault_for_security_commit(self, repo_path, notebook, security_commit):
+        """Update vault entry with new password from security commit"""
+        import time
+        import json
+        
+        notebook_id = notebook.get('id')
+        
+        # Read the new .tn_recovery from the written file
+        tn_recovery_path = os.path.join(repo_path, ".tn_recovery")
+        
+        if not os.path.exists(tn_recovery_path):
+            return
+        
+        with open(tn_recovery_path, 'rb') as f:
+            recovery_raw = f.read()
+        
+        # Get current crypto (has old phrase key - which never changes)
+        crypto = self._get_crypto_for_path(repo_path)
+        if not crypto:
+            return
+        
+        # Decrypt .tn_recovery using phrase key
+        from notebook_operations import read_bytes
+        recovery_info = read_bytes(recovery_raw, crypto)
+        
+        if not recovery_info:
+            return
+        
+        new_password_key_hex = recovery_info.get("password_key", "")
+        if not new_password_key_hex:
+            return
+        
+        new_password_key = bytes.fromhex(new_password_key_hex)
+        
+        # Get system entry from registry
+        fp_hash = self.manager._compute_fp_hash()
+        
+        registry = self.manager.load_registry(force_reload=True)
+        notebook_data = registry.get("notebooks", {}).get(notebook_id, {})
+        
+        systems = notebook_data.get("systems", {})
+        
+        system_entry = systems.get(fp_hash, {})
+        
+        entry_uuid = system_entry.get("entry")
+        vault_name = system_entry.get("vault", "default")
+        current_path = system_entry.get("path")
+        
+        if not entry_uuid:
+            return
+        
+        # Get vault path
+        vault_path = self.manager.vault_manager.get_vault_path(vault_name)
+        
+        if not vault_path or not os.path.exists(vault_path):
+            return
+        
+        # Get existing entry to preserve structure
+        existing_entry = self.manager.vault_manager.get_entry_from_vault(vault_path, entry_uuid)
+        
+        # Create new encrypted keys
+        fingerprint = self.manager._get_system_fingerprint()
+        
+        combined_keys = new_password_key + crypto.phrase_key
+        
+        nonce = os.urandom(12)
+        
+        from cryptography.hazmat.primitives.ciphers.aead import AESGCM
+        aesgcm = AESGCM(fingerprint)
+        encrypted_keys = aesgcm.encrypt(nonce, combined_keys, None)
+        
+        # Replace vault entry (same UUID)
+        success = self.manager.vault_manager.add_entry_to_vault(vault_path, entry_uuid, {
+            "notebook_id": notebook_id,
+            "timestamp": time.time_ns(),
+            "nonce": nonce.hex(),
+            "encrypted_keys": encrypted_keys.hex()
+        })
+        
+        if success:
+            # Update master registry to locked state
+            self.manager._update_system_entry(notebook_id, {
+                "path": current_path,
+                "vault": vault_name,
+                "entry": entry_uuid,
+                "locked": True
+            })
+            
+            # Clear session cache
+            if hasattr(self.manager, 'session_keys'):
+                if notebook_id in self.manager.session_keys._cache:
+                    del self.manager.session_keys._cache[notebook_id]
+    
     # ------------------------------------------------------------------------
     # Git Helpers
     # ------------------------------------------------------------------------
