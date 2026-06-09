@@ -2312,6 +2312,14 @@ class NoteManager:
                         self.secure_storage.remove_session_key(folder_name)
             # ========== END FIX ==========
             
+            # ========== FIX: Remove from in-memory notebooks list ==========
+            self.notebooks = [nb for nb in self.notebooks if nb.id != notebook_id]
+            # ========== END FIX ==========
+            
+            # ========== FIX: Remove from encrypted_notebooks set ==========
+            self.encrypted_notebooks.discard(notebook_id)
+            # ========== END FIX ==========
+            
             del registry_data["notebooks"][notebook_id]
             self.save_registry(registry_data)
 
