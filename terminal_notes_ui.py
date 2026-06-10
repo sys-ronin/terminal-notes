@@ -3604,14 +3604,25 @@ class TerminalNotes:
                 if not name:
                     continue
         
-                encrypt_choice = self.get_input("Encrypt notebook? [y/N] (Enter to cancel): ").strip().lower()
+                print()
+                print("  [1] Encrypted notebook (password protected)")
+                print("  [2] Unencrypted notebook")
+                print()
+                encrypt_choice = self.get_input("  Choose [1/2] or press Enter to cancel: ").strip()
+
                 if not encrypt_choice:
-                    continue  # Cancel - go back
-                if encrypt_choice not in ['y', 'n']:
-                    print("  Invalid choice. Please enter 'y' or 'n'.")
+                    print("\n  Notebook creation cancelled.")
                     self.get_input("Press Enter to continue...")
                     continue
-                encrypt = (encrypt_choice == 'y')
+
+                if encrypt_choice == "1":
+                    encrypt = True
+                elif encrypt_choice == "2":
+                    encrypt = False
+                else:
+                    print("\n  Invalid choice. Please enter 1 or 2.")
+                    self.get_input("Press Enter to continue...")
+                    continue
         
                 self.clear_screen()
         
@@ -3677,14 +3688,25 @@ class TerminalNotes:
                 if not name:
                     continue
         
-                encrypt_choice = self.get_input("Encrypt notebook? [y/N] (Enter to cancel): ").strip().lower()
+                print()
+                print("  [1] Encrypted notebook (password protected)")
+                print("  [2] Unencrypted notebook")
+                print()
+                encrypt_choice = self.get_input("  Choose [1/2] or press Enter to cancel: ").strip()
+
                 if not encrypt_choice:
-                    continue  # Cancel - go back
-                if encrypt_choice not in ['y', 'n']:
-                    print("  Invalid choice. Please enter 'y' or 'n'.")
+                    print("\n  Notebook creation cancelled.")
                     self.get_input("Press Enter to continue...")
                     continue
-                encrypt = (encrypt_choice == 'y')
+
+                if encrypt_choice == "1":
+                    encrypt = True
+                elif encrypt_choice == "2":
+                    encrypt = False
+                else:
+                    print("\n  Invalid choice. Please enter 1 or 2.")
+                    self.get_input("Press Enter to continue...")
+                    continue
         
                 self.clear_screen()
         
